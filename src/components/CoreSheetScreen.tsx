@@ -26,15 +26,20 @@ import {
   SkillEntry,
 } from '../types/ledger';
 import {
+  calculateHitDieHeal,
+  calculateHpAdjustment,
+  calculateRestoredHitDice,
   createId,
   formatSigned,
   formatTimestamp,
   getAbilityMod,
   getInitiative,
+  getPassiveInsight,
+  getPassiveInvestigation,
   getPassivePerception,
-  getPassiveSkill,
   getSaveTotal,
   getSkillTotal,
+  parseHitDieSides,
 } from '../utils/ledgerMath';
 import { EditorTab } from './GlobalModals';
 import { ReactivePortrait } from './ReactivePortrait';
@@ -107,8 +112,8 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
   const isGnome = state.identity.race.toLowerCase().includes('gnome');
   const magicAdvAbilities = state.gnomeCunningMagicAdv;
   const passivePerception = getPassivePerception(state);
-  const passiveInvestigation = getPassiveSkill(state, 'investigation', 'INT');
-  const passiveInsight = getPassiveSkill(state, 'insight', 'WIS');
+  const passiveInvestigation = getPassiveInvestigation(state);
+  const passiveInsight = getPassiveInsight(state);
   const initiative = getInitiative(state);
   const hitDiceRemaining = Math.max(
     0,
@@ -140,18 +145,13 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
     const amount = Number.isNaN(raw) || raw <= 0 ? 1 : raw;
 
     onUpdateState((prev) => {
-      let { hpCurrent, hpMax, tempHp } = prev.vitals;
-      if (direction === 'wound') {
-        let remaining = amount;
-        if (tempHp > 0) {
-          const absorbed = Math.min(tempHp, remaining);
-          tempHp -= absorbed;
-          remaining -= absorbed;
-        }
-        hpCurrent = Math.max(0, hpCurrent - remaining);
-      } else {
-        hpCurrent = Math.min(hpMax, hpCurrent + amount);
-      }
+      const { hpCurrent, tempHp } = calculateHpAdjustment(
+        prev.vitals.hpCurrent,
+        prev.vitals.hpMax,
+        prev.vitals.tempHp,
+        amount,
+        direction
+      );
       return {
         ...prev,
         vitals: {
@@ -171,10 +171,9 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
   const handleSpendHitDie = () => {
     if (readOnly || hitDiceRemaining <= 0) return;
     const conMod = getAbilityMod(state.abilities.CON);
-    const dieMatch = state.vitals.hitDiceDie.match(/d(\d+)/i);
-    const dieSides = dieMatch ? parseInt(dieMatch[1], 10) : 8;
+    const dieSides = parseHitDieSides(state.vitals.hitDiceDie, 8);
     const roll = Math.floor(Math.random() * dieSides) + 1;
-    const healed = Math.max(1, roll + conMod);
+    const healed = calculateHitDieHeal(roll, state.abilities.CON);
 
     onRollExpression(
       `1d${dieSides}${formatSigned(conMod)}`,
@@ -198,7 +197,7 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
   const handleLongRest = () => {
     if (readOnly) return;
     onUpdateState((prev) => {
-      const recoveredHd = Math.max(1, Math.floor(prev.vitals.hitDiceTotal / 2));
+      const recoveredHd = calculateRestoredHitDice(prev.vitals.hitDiceTotal);
       return {
         ...prev,
         vitals: {

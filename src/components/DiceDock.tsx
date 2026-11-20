@@ -1,13 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import {
+  Check,
   ChevronDown,
   ChevronUp,
+  Copy,
   Dices,
   History,
+  RotateCcw,
   Settings2,
   Trash2,
 } from 'lucide-react';
-import { LedgerState, RollMode, RollRecord } from '../types/ledger';
+import { DiceMacro, LedgerState, RollMode, RollRecord } from '../types/ledger';
 import { formatSigned } from '../utils/ledgerMath';
 import { MAX_ROLL_HISTORY } from '../utils/storage';
 
@@ -74,14 +77,14 @@ export const DiceDock: React.FC<DiceDockProps> = ({
   const [expanded, setExpanded] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [customExpr, setCustomExpr] = useState('');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const latest = rollHistory[0] ?? null;
 
-  // Wire keyboard shortcuts 1–9 for all customizable quick macros when not typing in an input
+  // Wire keyboard shortcuts: 1–9, Shift+1..9 (ADV), Alt+1..9 (DIS), Shift+A (Adv), Shift+D (Dis), Shift+N (Norm)
   useEffect(() => {
     if (!hotkeysEnabled) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
       const target = e.target as HTMLElement | null;
       if (
         target &&
@@ -93,23 +96,47 @@ export const DiceDock: React.FC<DiceDockProps> = ({
         return;
       }
 
-      if (e.key >= '1' && e.key <= '9') {
+      // Quick roll mode toggle shortcuts
+      if (!e.ctrlKey && !e.metaKey && e.shiftKey) {
+        if (e.key === 'A' || e.key === 'a') {
+          e.preventDefault();
+          onChangeRollMode(rollMode === 'adv' ? 'normal' : 'adv');
+          return;
+        }
+        if (e.key === 'D' || e.key === 'd') {
+          e.preventDefault();
+          onChangeRollMode(rollMode === 'dis' ? 'normal' : 'dis');
+          return;
+        }
+        if (e.key === 'N' || e.key === 'n') {
+          e.preventDefault();
+          onChangeRollMode('normal');
+          return;
+        }
+      }
+
+      // Quick macro hotkeys 1–9
+      if (e.key >= '1' && e.key <= '9' && !e.ctrlKey && !e.metaKey) {
         const slotNum = parseInt(e.key, 10);
         const macro = state.customMacros.find((m) => m.slot === slotNum);
         if (macro && macro.label.trim() && macro.expression.trim()) {
           e.preventDefault();
-          onRollExpression(
-            macro.expression,
-            macro.label,
-            macro.mode === 'normal' ? rollMode : macro.mode
-          );
+          const effectiveMode: RollMode = e.shiftKey
+            ? 'adv'
+            : e.altKey
+            ? 'dis'
+            : macro.mode === 'normal'
+            ? rollMode
+            : macro.mode;
+
+          onRollExpression(macro.expression, macro.label, effectiveMode);
         }
       }
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [hotkeysEnabled, rollMode, state.customMacros, onRollExpression]);
+  }, [hotkeysEnabled, rollMode, state.customMacros, onRollExpression, onChangeRollMode]);
 
   const handleCustomSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -117,6 +144,49 @@ export const DiceDock: React.FC<DiceDockProps> = ({
     onRollExpression(customExpr.trim(), customExpr.trim(), rollMode);
     setCustomExpr('');
   };
+
+  const handleMacroRoll = (macro: DiceMacro, e: React.MouseEvent) => {
+    const configured = Boolean(macro.label.trim() && macro.expression.trim());
+    if (configured) {
+      const effectiveMode: RollMode = e.shiftKey
+        ? 'adv'
+        : e.altKey
+        ? 'dis'
+        : macro.mode === 'normal'
+        ? rollMode
+        : macro.mode;
+      onRollExpression(macro.expression, macro.label, effectiveMode);
+    } else if (!readOnly) {
+      onOpenMacroEditor();
+    }
+  };
+
+  const handleStandardDieRoll = (die: string, e: React.MouseEvent) => {
+    const effectiveMode: RollMode = e.shiftKey
+      ? 'adv'
+      : e.altKey
+      ? 'dis'
+      : rollMode;
+    if (die === 'd20') {
+      onRollD20('d20 Roll', 0, effectiveMode);
+    } else {
+      onRollExpression(`1${die}`, `1${die}`, effectiveMode === 'normal' ? 'normal' : effectiveMode);
+    }
+  };
+
+  const copyRollResult = (item: RollRecord) => {
+    const kept = item.keptIndices
+      ? ` (kept ${item.rolls.filter((_, i) => item.keptIndices?.includes(i)).join(', ')})`
+      : '';
+    const text = `[${state.identity.name.trim() || 'Pip'}] ${item.label}: ${item.expression} = ${item.total} [${item.rolls.join(', ')}]${kept}`;
+    navigator.clipboard.writeText(text);
+    setCopiedId(item.id);
+    window.setTimeout(() => setCopiedId(null), 1600);
+  };
+
+  const configuredMacros = state.customMacros.filter(
+    (m) => m.label.trim() && m.expression.trim()
+  );
 
   return (
     <div className="fixed bottom-0 inset-x-0 z-40 bg-[#0b100e]/98 border-t border-[#581c87] backdrop-blur-sm">
@@ -142,14 +212,14 @@ export const DiceDock: React.FC<DiceDockProps> = ({
 
             {rollHistory.length === 0 ? (
               <p className="text-xs text-[#9eb0a7] py-3">
-                No rolls recorded yet. Click any die, macro (keys 1–9), ability, save, or skill to roll.
+                No rolls recorded yet. Click any die, macro (keys 1–9, Shift+1–9 for Adv), ability, save, or skill to roll.
               </p>
             ) : (
               <div className="divide-y divide-[#1d1827]">
                 {rollHistory.map((item) => (
                   <div
                     key={item.id}
-                    className="py-1.5 flex items-center justify-between gap-3 text-xs font-mono tabular-nums"
+                    className="py-1.5 flex items-center justify-between gap-3 text-xs font-mono tabular-nums hover:bg-[#171022]/40 px-1 rounded transition-colors"
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
                       <span className="text-[10px] text-[#65766e] shrink-0">
@@ -163,7 +233,7 @@ export const DiceDock: React.FC<DiceDockProps> = ({
                       </span>
                       {item.mode !== 'normal' && (
                         <span
-                          className={`text-[10px] uppercase shrink-0 ${
+                          className={`text-[10px] uppercase font-bold shrink-0 ${
                             item.mode === 'adv' ? 'text-[#4af626]' : 'text-[#ff4d4d]'
                           }`}
                         >
@@ -171,7 +241,7 @@ export const DiceDock: React.FC<DiceDockProps> = ({
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center gap-3 shrink-0">
+                    <div className="flex items-center gap-2.5 shrink-0">
                       <span className="text-[11px] text-[#9eb0a7] flex items-center gap-1">
                         {renderIndividualDice(item)}
                         {item.modifier !== 0 && (
@@ -181,24 +251,48 @@ export const DiceDock: React.FC<DiceDockProps> = ({
                       <span
                         className={`text-sm font-bold min-w-[2.2rem] text-right ${
                           item.isNat20
-                            ? 'text-[#4af626]'
+                            ? 'text-[#4af626] drop-shadow-[0_0_8px_rgba(74,246,38,0.5)]'
                             : item.isNat1
-                            ? 'text-[#ff4d4d]'
+                            ? 'text-[#ff4d4d] drop-shadow-[0_0_8px_rgba(255,77,77,0.5)]'
                             : 'text-[#d4e0da]'
                         }`}
                       >
                         {item.total}
                       </span>
                       {item.isNat20 && (
-                        <span className="text-[10px] font-semibold text-[#4af626] uppercase">
+                        <span className="text-[10px] font-bold text-[#4af626] uppercase">
                           NAT 20
                         </span>
                       )}
                       {item.isNat1 && (
-                        <span className="text-[10px] font-semibold text-[#ff4d4d] uppercase">
+                        <span className="text-[10px] font-bold text-[#ff4d4d] uppercase">
                           NAT 1
                         </span>
                       )}
+
+                      {/* Fast Re-Roll & Copy Actions */}
+                      <button
+                        type="button"
+                        onClick={() => onRollExpression(item.expression, item.label, item.mode)}
+                        title={`Re-roll ${item.label}`}
+                        className="p-1 rounded text-[#9eb0a7] hover:text-[#c084fc] hover:bg-[#171022] cursor-pointer"
+                        aria-label={`Re-roll ${item.label}`}
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => copyRollResult(item)}
+                        title="Copy roll result to clipboard"
+                        className="p-1 rounded text-[#9eb0a7] hover:text-[#4af626] hover:bg-[#171022] cursor-pointer"
+                        aria-label="Copy roll result"
+                      >
+                        {copiedId === item.id ? (
+                          <Check className="w-3 h-3 text-[#4af626]" />
+                        ) : (
+                          <Copy className="w-3 h-3" />
+                        )}
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -211,14 +305,14 @@ export const DiceDock: React.FC<DiceDockProps> = ({
       {/* Main Dock Strip */}
       <div className="max-w-[1440px] mx-auto px-3 sm:px-6 py-2">
         {/* Mobile Compact Bar */}
-        <div className="flex md:hidden items-center justify-between gap-2">
+        <div className="flex md:hidden items-center justify-between gap-1.5">
           <button
             type="button"
             onClick={() => setMobileOpen((prev) => !prev)}
-            className="flex items-center gap-2 text-xs font-medium text-[#d4e0da] cursor-pointer"
+            className="flex items-center gap-1.5 text-xs font-medium text-[#d4e0da] cursor-pointer shrink-0"
           >
             <Dices className="w-4 h-4 text-[#a855f7]" />
-            <span>Dice Dock</span>
+            <span className="font-mono text-[11px]">Dice</span>
             {mobileOpen ? (
               <ChevronDown className="w-3.5 h-3.5 text-[#9eb0a7]" />
             ) : (
@@ -226,13 +320,28 @@ export const DiceDock: React.FC<DiceDockProps> = ({
             )}
           </button>
 
-          {/* Latest roll compact readout */}
-          <div className="flex items-center gap-2 min-w-0">
+          {/* Quick-tap primary macros for mobile without full drawer */}
+          <div className="flex items-center gap-1 overflow-x-auto min-w-0 py-0.5">
+            {configuredMacros.slice(0, 3).map((macro) => (
+              <button
+                key={macro.slot}
+                type="button"
+                onClick={(e) => handleMacroRoll(macro, e)}
+                className="px-2 py-0.5 rounded border border-[#581c87] bg-[#171022] text-[10px] font-mono text-[#d4e0da] shrink-0 truncate max-w-[85px] cursor-pointer"
+                title={`Roll ${macro.label} (${macro.expression})`}
+              >
+                {macro.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Latest roll compact readout + Quick d20 */}
+          <div className="flex items-center gap-1.5 shrink-0">
             {latest ? (
               <button
                 type="button"
                 onClick={() => setExpanded((prev) => !prev)}
-                className={`px-2 py-0.5 rounded border text-xs font-mono tabular-nums flex items-center gap-1.5 cursor-pointer ${
+                className={`px-1.5 py-0.5 rounded border text-[11px] font-mono tabular-nums flex items-center gap-1 cursor-pointer ${
                   latest.isNat20
                     ? 'border-[#4af626] text-[#4af626] bg-[#4af626]/10'
                     : latest.isNat1
@@ -240,18 +349,13 @@ export const DiceDock: React.FC<DiceDockProps> = ({
                     : 'border-[#581c87] text-[#d4e0da] bg-[#171022]'
                 }`}
               >
-                <span className="truncate max-w-[110px] font-sans text-[11px]">
-                  {latest.label}
-                </span>
                 <span className="font-bold">{latest.total}</span>
               </button>
-            ) : (
-              <span className="text-[11px] text-[#9eb0a7] font-mono">Ready</span>
-            )}
+            ) : null}
             <button
               type="button"
-              onClick={() => onRollD20('Quick d20', 0, rollMode)}
-              className="px-2.5 py-1 rounded bg-[#a855f7] text-[#080c0a] font-mono text-xs font-bold cursor-pointer"
+              onClick={(e) => handleStandardDieRoll('d20', e)}
+              className="px-2 py-1 rounded bg-[#a855f7] text-[#080c0a] font-mono text-xs font-bold cursor-pointer"
             >
               d20
             </button>
@@ -261,13 +365,13 @@ export const DiceDock: React.FC<DiceDockProps> = ({
         {/* Full Dock Content (Always visible on md+, toggleable on mobile) */}
         <div
           className={`${
-            mobileOpen ? 'flex mt-2.5 pt-2.5 border-t border-[#2e243b]' : 'hidden'
+            mobileOpen ? 'flex mt-2 pt-2 border-t border-[#2e243b]' : 'hidden'
           } md:flex flex-col gap-2`}
         >
           {/* Row 1: Roll Mode + Standard Dice + Custom Expression + Latest Result */}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-1.5">
-              {/* Adv / Normal / Dis Segmented Control */}
+              {/* Adv / Normal / Dis Segmented Control with keyboard hotkey indicators */}
               <div
                 className="flex items-center bg-[#080c0a] border border-[#2e243b] rounded p-0.5"
                 role="group"
@@ -275,21 +379,22 @@ export const DiceDock: React.FC<DiceDockProps> = ({
               >
                 {(
                   [
-                    { id: 'normal', label: 'Norm' },
-                    { id: 'adv', label: 'Adv' },
-                    { id: 'dis', label: 'Dis' },
+                    { id: 'normal', label: 'Norm', tip: 'Shift+N' },
+                    { id: 'adv', label: 'Adv', tip: 'Shift+A' },
+                    { id: 'dis', label: 'Dis', tip: 'Shift+D' },
                   ] as const
                 ).map((m) => (
                   <button
                     key={m.id}
                     type="button"
                     onClick={() => onChangeRollMode(m.id)}
+                    title={`${m.label} roll mode (${m.tip})`}
                     className={`px-2 py-1 text-[11px] font-mono rounded-sm transition-colors cursor-pointer whitespace-nowrap ${
                       rollMode === m.id
                         ? m.id === 'adv'
-                          ? 'bg-[#4af626]/20 text-[#4af626] font-semibold'
+                          ? 'bg-[#4af626]/20 text-[#4af626] font-semibold border border-[#4af626]/40'
                           : m.id === 'dis'
-                          ? 'bg-[#ff4d4d]/20 text-[#ff4d4d] font-semibold'
+                          ? 'bg-[#ff4d4d]/20 text-[#ff4d4d] font-semibold border border-[#ff4d4d]/40'
                           : 'bg-[#a855f7] text-[#080c0a] font-semibold'
                         : 'text-[#9eb0a7] hover:text-[#d4e0da]'
                     }`}
@@ -299,17 +404,14 @@ export const DiceDock: React.FC<DiceDockProps> = ({
                 ))}
               </div>
 
-              {/* Standard Dice Buttons */}
+              {/* Standard Dice Buttons (Shift+click = ADV, Alt+click = DIS) */}
               <div className="flex items-center gap-1 flex-wrap">
                 {STANDARD_DICE.map((die) => (
                   <button
                     key={die}
                     type="button"
-                    onClick={() =>
-                      die === 'd20'
-                        ? onRollD20('d20 Roll', 0, rollMode)
-                        : onRollExpression(`1${die}`, `1${die}`, 'normal')
-                    }
+                    onClick={(e) => handleStandardDieRoll(die, e)}
+                    title={`Roll 1${die} · Shift+click for ADV · Alt+click for DIS`}
                     className={`px-2 py-1 text-xs font-mono rounded border transition-colors cursor-pointer whitespace-nowrap ${
                       die === 'd20'
                         ? 'bg-[#171022] border-[#a855f7] text-[#c084fc] hover:bg-[#a855f7] hover:text-[#080c0a] font-semibold'
@@ -327,10 +429,10 @@ export const DiceDock: React.FC<DiceDockProps> = ({
                   type="text"
                   value={customExpr}
                   onChange={(e) => setCustomExpr(e.target.value)}
-                  placeholder="1d20+7, 2d20kh1+5"
+                  placeholder="1d20+7, 2d6+3"
                   aria-label="Custom dice expression"
-                  title="Supports standard rolls (1d20+7, 1d8+3), advantage (2d20kh1+5), and disadvantage (2d20kl1+3)"
-                  className="ledger-input h-7 w-32 sm:w-36 px-2 text-xs font-mono"
+                  title="Supports 1d20+7, 2d20kh1+5 (adv), 2d20kl1+3 (dis), or dice equations"
+                  className="ledger-input h-7 w-28 sm:w-36 px-2 text-xs font-mono"
                 />
                 <button
                   type="submit"
@@ -353,7 +455,7 @@ export const DiceDock: React.FC<DiceDockProps> = ({
                       : 'bg-[#171022] border-[#581c87] text-[#d4e0da]'
                   }`}
                 >
-                  <span className="font-sans text-[11px] text-[#9eb0a7] max-w-[140px] truncate">
+                  <span className="font-sans text-[11px] text-[#9eb0a7] max-w-[130px] truncate">
                     {latest.label}
                   </span>
                   <span className="text-[11px] text-[#9eb0a7] flex items-center gap-0.5">
@@ -366,15 +468,15 @@ export const DiceDock: React.FC<DiceDockProps> = ({
                     {latest.total}
                   </span>
                   {latest.isNat20 && (
-                    <span className="text-[10px] font-bold">NAT 20</span>
+                    <span className="text-[10px] font-bold text-[#4af626]">NAT 20</span>
                   )}
                   {latest.isNat1 && (
-                    <span className="text-[10px] font-bold">NAT 1</span>
+                    <span className="text-[10px] font-bold text-[#ff4d4d]">NAT 1</span>
                   )}
                 </div>
               ) : (
                 <span className="text-xs font-mono text-[#65766e]">
-                  No rolls yet
+                  Ready
                 </span>
               )}
 
@@ -384,7 +486,7 @@ export const DiceDock: React.FC<DiceDockProps> = ({
                 className="h-7 px-2.5 text-xs text-[#9eb0a7] hover:text-[#d4e0da] bg-[#080c0a] border border-[#2e243b] hover:border-[#581c87] rounded flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                 title={`Toggle 25-roll history (${rollHistory.length}/${MAX_ROLL_HISTORY})`}
               >
-                <History className="w-3.5 h-3.5" />
+                <History className="w-3.5 h-3.5 text-[#c084fc]" />
                 <span className="font-mono tabular-nums">
                   {rollHistory.length}/{MAX_ROLL_HISTORY}
                 </span>
@@ -397,7 +499,7 @@ export const DiceDock: React.FC<DiceDockProps> = ({
             </div>
           </div>
 
-          {/* Row 2: Customizable Quick Macro Bar (Slots 1–9) */}
+          {/* Row 2: Customizable Quick Macro Bar (Slots 1–9) with Shift+click = ADV, Alt+click = DIS */}
           <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
             {state.customMacros.map((macro) => {
               const configured = Boolean(
@@ -408,17 +510,7 @@ export const DiceDock: React.FC<DiceDockProps> = ({
                 <button
                   key={macro.slot}
                   type="button"
-                  onClick={() => {
-                    if (configured) {
-                      onRollExpression(
-                        macro.expression,
-                        macro.label,
-                        macro.mode === 'normal' ? rollMode : macro.mode
-                      );
-                    } else if (!readOnly) {
-                      onOpenMacroEditor();
-                    }
-                  }}
+                  onClick={(e) => handleMacroRoll(macro, e)}
                   disabled={!configured && readOnly}
                   className={`px-2 py-1 text-[11px] rounded border transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
                     configured
@@ -435,11 +527,7 @@ export const DiceDock: React.FC<DiceDockProps> = ({
                   }`}
                   title={
                     configured
-                      ? `Hotkey: ${macro.slot} — ${macro.label} (${macro.expression}${
-                          macro.mode !== 'normal'
-                            ? ` · ${macro.mode.toUpperCase()}`
-                            : ''
-                        })`
+                      ? `Hotkey: ${macro.slot} (Shift+${macro.slot} for ADV, Alt+${macro.slot} for DIS) — ${macro.label} (${macro.expression})`
                       : readOnly
                       ? `Empty Macro Slot ${macro.slot}`
                       : `Configure Macro Slot ${macro.slot}`

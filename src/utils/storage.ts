@@ -7,13 +7,20 @@ import {
 } from '../data/defaultState';
 import {
   AbilityKey,
+  AttackEntry,
+  CampaignLogEntry,
+  CustomCondition,
   CustomLedgerSection,
   DiceMacro,
+  GearItem,
   LedgerState,
   ProficiencyRank,
   RollMode,
   RollRecord,
+  SessionCostLine,
   SkillEntry,
+  SpellEntry,
+  SupplyCounter,
 } from '../types/ledger';
 import { redactStateForParty } from './ledgerMath';
 
@@ -35,10 +42,19 @@ export function slugifyCharacterName(name: string): string {
 
 export function loadLedgerState(): LedgerState {
   try {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return createInitialLedgerState();
+    }
     const raw = localStorage.getItem(STATE_STORAGE_KEY);
     if (!raw) return createInitialLedgerState();
-    const parsed = JSON.parse(raw) as Partial<LedgerState>;
-    return mergeWithDefaults(parsed, createBlankCharacterState());
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return createInitialLedgerState();
+    }
+    return mergeWithDefaults(
+      parsed as Partial<LedgerState>,
+      createBlankCharacterState()
+    );
   } catch {
     return createInitialLedgerState();
   }
@@ -46,7 +62,9 @@ export function loadLedgerState(): LedgerState {
 
 export function saveLedgerState(state: LedgerState): void {
   try {
-    localStorage.setItem(STATE_STORAGE_KEY, JSON.stringify(state));
+    if (typeof window !== 'undefined' && window.localStorage) {
+      localStorage.setItem(STATE_STORAGE_KEY, JSON.stringify(state));
+    }
   } catch {
     // Ignore quota errors gracefully
   }
@@ -56,10 +74,55 @@ export const MAX_ROLL_HISTORY = 25;
 
 export function loadRollHistory(): RollRecord[] {
   try {
+    if (typeof window === 'undefined' || !window.localStorage) return [];
     const raw = localStorage.getItem(ROLL_HISTORY_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.slice(0, MAX_ROLL_HISTORY) : [];
+    if (!Array.isArray(parsed)) return [];
+
+    const validRolls: RollRecord[] = [];
+    for (const item of parsed) {
+      if (
+        item &&
+        typeof item === 'object' &&
+        typeof item.id === 'string' &&
+        item.id.trim() &&
+        typeof item.expression === 'string' &&
+        typeof item.total === 'number' &&
+        Number.isFinite(item.total) &&
+        Array.isArray(item.rolls)
+      ) {
+        const mode: RollMode =
+          typeof item.mode === 'string' && VALID_ROLL_MODES.has(item.mode)
+            ? (item.mode as RollMode)
+            : 'normal';
+
+        validRolls.push({
+          id: item.id.trim(),
+          timestamp: typeof item.timestamp === 'string' ? item.timestamp : '',
+          label: typeof item.label === 'string' ? item.label : item.expression,
+          expression: item.expression,
+          rolls: item.rolls.filter(
+            (r: unknown): r is number => typeof r === 'number' && Number.isFinite(r)
+          ),
+          modifier:
+            typeof item.modifier === 'number' && Number.isFinite(item.modifier)
+              ? item.modifier
+              : 0,
+          total: Math.round(item.total),
+          isNat20: Boolean(item.isNat20),
+          isNat1: Boolean(item.isNat1),
+          mode,
+          keptIndices: Array.isArray(item.keptIndices)
+            ? item.keptIndices.filter(
+                (idx: unknown): idx is number =>
+                  typeof idx === 'number' && Number.isFinite(idx)
+              )
+            : undefined,
+        });
+      }
+    }
+    return validRolls.slice(0, MAX_ROLL_HISTORY);
   } catch {
     return [];
   }
@@ -67,10 +130,12 @@ export function loadRollHistory(): RollRecord[] {
 
 export function saveRollHistory(rolls: RollRecord[]): void {
   try {
-    localStorage.setItem(
-      ROLL_HISTORY_KEY,
-      JSON.stringify(rolls.slice(0, MAX_ROLL_HISTORY))
-    );
+    if (typeof window !== 'undefined' && window.localStorage) {
+      localStorage.setItem(
+        ROLL_HISTORY_KEY,
+        JSON.stringify(rolls.slice(0, MAX_ROLL_HISTORY))
+      );
+    }
   } catch {
     // Ignore quota errors
   }
@@ -184,10 +249,140 @@ function normalizeMacros(
   });
 }
 
+function normalizeAttacks(incoming: unknown): AttackEntry[] {
+  if (!Array.isArray(incoming)) return [];
+  return incoming
+    .filter((a): a is Partial<AttackEntry> => Boolean(a && typeof a === 'object'))
+    .map((a, idx) => ({
+      id: typeof a.id === 'string' && a.id.trim() ? a.id.trim() : `atk-${idx + 1}`,
+      name: typeof a.name === 'string' && a.name.trim() ? a.name : `Attack ${idx + 1}`,
+      attackBonus: typeof a.attackBonus === 'string' ? a.attackBonus : '+0',
+      damage: typeof a.damage === 'string' ? a.damage : '1d4',
+      damageType: typeof a.damageType === 'string' ? a.damageType : '',
+      notes: typeof a.notes === 'string' ? a.notes : '',
+      quickRoll: typeof a.quickRoll === 'boolean' ? a.quickRoll : true,
+    }));
+}
+
+function normalizeSpells(incoming: unknown): SpellEntry[] {
+  if (!Array.isArray(incoming)) return [];
+  return incoming
+    .filter((sp): sp is Partial<SpellEntry> => Boolean(sp && typeof sp === 'object'))
+    .map((sp, idx) => ({
+      id: typeof sp.id === 'string' && sp.id.trim() ? sp.id.trim() : `spell-${idx + 1}`,
+      name: typeof sp.name === 'string' && sp.name.trim() ? sp.name : `Spell ${idx + 1}`,
+      level: Math.max(0, Math.min(9, Math.round(coerceNumber(sp.level, 0)))),
+      school: typeof sp.school === 'string' ? sp.school : '',
+      castingTime: typeof sp.castingTime === 'string' ? sp.castingTime : '',
+      range: typeof sp.range === 'string' ? sp.range : '',
+      duration: typeof sp.duration === 'string' ? sp.duration : '',
+      prepared: typeof sp.prepared === 'boolean' ? sp.prepared : true,
+      concentration: Boolean(sp.concentration),
+      description: typeof sp.description === 'string' ? sp.description : '',
+      source: sp.source === 'srd' ? 'srd' : 'custom',
+    }));
+}
+
+function normalizeGear(incoming: unknown): GearItem[] {
+  if (!Array.isArray(incoming)) return [];
+  return incoming
+    .filter((g): g is Partial<GearItem> => Boolean(g && typeof g === 'object'))
+    .map((g, idx) => ({
+      id: typeof g.id === 'string' && g.id.trim() ? g.id.trim() : `gear-${idx + 1}`,
+      name: typeof g.name === 'string' && g.name.trim() ? g.name : `Item ${idx + 1}`,
+      category: typeof g.category === 'string' ? g.category : 'General',
+      quantity: Math.max(1, Math.round(coerceNumber(g.quantity, 1))),
+      weight: typeof g.weight === 'string' ? g.weight : '',
+      equipped: Boolean(g.equipped),
+      notes: typeof g.notes === 'string' ? g.notes : '',
+      source: g.source === 'srd' ? 'srd' : 'custom',
+    }));
+}
+
+function normalizeSupplies(
+  incoming: unknown,
+  fallback: SupplyCounter[]
+): SupplyCounter[] {
+  if (!Array.isArray(incoming)) return fallback.map((s) => ({ ...s }));
+  return incoming
+    .filter((s): s is Partial<SupplyCounter> => Boolean(s && typeof s === 'object'))
+    .map((s, idx) => {
+      const category =
+        s.category === 'clockwork' || s.category === 'other'
+          ? s.category
+          : 'medical';
+      return {
+        id: typeof s.id === 'string' && s.id.trim() ? s.id.trim() : `sup-${idx + 1}`,
+        name: typeof s.name === 'string' && s.name.trim() ? s.name : `Supply ${idx + 1}`,
+        category,
+        quantity: Math.max(0, Math.round(coerceNumber(s.quantity, 0))),
+        unit: typeof s.unit === 'string' ? s.unit : '',
+        notes: typeof s.notes === 'string' ? s.notes : '',
+      };
+    });
+}
+
+function normalizeSessionCosts(incoming: unknown): SessionCostLine[] {
+  if (!Array.isArray(incoming)) return [];
+  return incoming
+    .filter((c): c is Partial<SessionCostLine> => Boolean(c && typeof c === 'object'))
+    .map((c, idx) => {
+      const currency =
+        c.currency === 'SP' || c.currency === 'CP' ? c.currency : 'GP';
+      return {
+        id: typeof c.id === 'string' && c.id.trim() ? c.id.trim() : `cost-${idx + 1}`,
+        description:
+          typeof c.description === 'string' ? c.description : 'Expended resource',
+        amount:
+          typeof c.amount === 'string'
+            ? c.amount
+            : typeof c.amount === 'number'
+            ? String(c.amount)
+            : '0',
+        currency,
+        timestamp: typeof c.timestamp === 'string' ? c.timestamp : '',
+      };
+    });
+}
+
+function normalizeCampaignLog(incoming: unknown): CampaignLogEntry[] {
+  if (!Array.isArray(incoming)) return [];
+  return incoming
+    .filter((e): e is Partial<CampaignLogEntry> => Boolean(e && typeof e === 'object'))
+    .map((e, idx) => {
+      const rawTags = Array.isArray(e.tags)
+        ? e.tags.filter((t): t is string => typeof t === 'string' && Boolean(t.trim()))
+        : [];
+      return {
+        id: typeof e.id === 'string' && e.id.trim() ? e.id.trim() : `log-${idx + 1}`,
+        timestamp: typeof e.timestamp === 'string' ? e.timestamp : '',
+        title: typeof e.title === 'string' ? e.title : 'Field Note',
+        body: typeof e.body === 'string' ? e.body : '',
+        tags: rawTags,
+        isPrivate: Boolean(e.isPrivate),
+      };
+    });
+}
+
+function normalizeExtraConditions(incoming: unknown): CustomCondition[] {
+  if (!Array.isArray(incoming)) return [];
+  return incoming
+    .filter((c): c is Partial<CustomCondition> => Boolean(c && typeof c === 'object'))
+    .map((c, idx) => ({
+      id: typeof c.id === 'string' && c.id.trim() ? c.id.trim() : `cond-${idx + 1}`,
+      name: typeof c.name === 'string' && c.name.trim() ? c.name : `Condition ${idx + 1}`,
+      description: typeof c.description === 'string' ? c.description : '',
+    }));
+}
+
 export function mergeWithDefaults(
   incoming: Partial<LedgerState>,
   defaults: LedgerState = createBlankCharacterState()
 ): LedgerState {
+  if (!incoming || typeof incoming !== 'object') {
+    return { ...defaults };
+  }
+
   const incomingVersion = coerceNumber(incoming.version, 1);
   const incomingName =
     typeof incoming.identity?.name === 'string' ? incoming.identity.name : '';
@@ -265,7 +460,9 @@ export function mergeWithDefaults(
     ),
     identity: {
       ...defaults.identity,
-      ...(incoming.identity ?? {}),
+      ...(incoming.identity && typeof incoming.identity === 'object'
+        ? incoming.identity
+        : {}),
       name:
         typeof incoming.identity?.name === 'string'
           ? incoming.identity.name
@@ -313,7 +510,9 @@ export function mergeWithDefaults(
     skills: normalizeSkills(incoming.skills, defaults.skills),
     vitals: {
       ...defaults.vitals,
-      ...(incoming.vitals ?? {}),
+      ...(incoming.vitals && typeof incoming.vitals === 'object'
+        ? incoming.vitals
+        : {}),
       ac: Math.max(0, Math.round(coerceNumber(incoming.vitals?.ac, defaults.vitals.ac))),
       initiativeOverride:
         incoming.vitals?.initiativeOverride === null ||
@@ -363,9 +562,7 @@ export function mergeWithDefaults(
             Math.round(coerceNumber(incoming.vitals?.conditions?.exhaustion, 0))
           )
         ),
-        extra: Array.isArray(incoming.vitals?.conditions?.extra)
-          ? incoming.vitals.conditions.extra
-          : defaults.vitals.conditions.extra,
+        extra: normalizeExtraConditions(incoming.vitals?.conditions?.extra),
       },
     },
     persona: {
@@ -402,40 +599,31 @@ export function mergeWithDefaults(
           : '',
     },
     gearAndNotes: {
-      attacks: Array.isArray(incoming.gearAndNotes?.attacks)
-        ? incoming.gearAndNotes.attacks
-        : [],
-      spells: Array.isArray(incoming.gearAndNotes?.spells)
-        ? incoming.gearAndNotes.spells
-        : [],
+      attacks: normalizeAttacks(incoming.gearAndNotes?.attacks),
+      spells: normalizeSpells(incoming.gearAndNotes?.spells),
       spellSlots: normalizedSpellSlots,
-      gear: Array.isArray(incoming.gearAndNotes?.gear)
-        ? incoming.gearAndNotes.gear
-        : [],
+      gear: normalizeGear(incoming.gearAndNotes?.gear),
       miniatureSupplies:
         isLegacyPipV1 &&
         (!Array.isArray(incoming.gearAndNotes?.miniatureSupplies) ||
           incoming.gearAndNotes.miniatureSupplies.length === 0)
           ? DEFAULT_MINIATURE_SUPPLIES.map((s) => ({ ...s }))
-          : Array.isArray(incoming.gearAndNotes?.miniatureSupplies)
-          ? incoming.gearAndNotes.miniatureSupplies
-          : defaults.gearAndNotes.miniatureSupplies,
+          : normalizeSupplies(
+              incoming.gearAndNotes?.miniatureSupplies,
+              defaults.gearAndNotes.miniatureSupplies
+            ),
       currency: {
         gp: Math.max(0, Math.round(coerceNumber(incoming.gearAndNotes?.currency?.gp, 0))),
         sp: Math.max(0, Math.round(coerceNumber(incoming.gearAndNotes?.currency?.sp, 0))),
         cp: Math.max(0, Math.round(coerceNumber(incoming.gearAndNotes?.currency?.cp, 0))),
       },
-      sessionCosts: Array.isArray(incoming.gearAndNotes?.sessionCosts)
-        ? incoming.gearAndNotes.sessionCosts
-        : [],
+      sessionCosts: normalizeSessionCosts(incoming.gearAndNotes?.sessionCosts),
       scratchpad:
         typeof incoming.gearAndNotes?.scratchpad === 'string'
           ? incoming.gearAndNotes.scratchpad
           : '',
       scratchpadPrivate: Boolean(incoming.gearAndNotes?.scratchpadPrivate),
-      campaignLog: Array.isArray(incoming.gearAndNotes?.campaignLog)
-        ? incoming.gearAndNotes.campaignLog
-        : [],
+      campaignLog: normalizeCampaignLog(incoming.gearAndNotes?.campaignLog),
     },
     customLedger: normalizeCustomLedger(
       incoming.customLedger,
@@ -470,34 +658,77 @@ export function parseImportedLedgerJson(rawText: string): {
   ok: false;
   error: string;
 } {
-  try {
-    const parsed = JSON.parse(rawText);
-    const candidate =
-      parsed?.data && typeof parsed.data === 'object' ? parsed.data : parsed;
-    if (
-      !candidate ||
-      typeof candidate !== 'object' ||
-      !candidate.identity ||
-      typeof candidate.identity !== 'object' ||
-      !candidate.abilities ||
-      typeof candidate.abilities !== 'object'
-    ) {
-      return {
-        ok: false,
-        error: 'JSON does not match The Clinical Ledger schema.',
-      };
-    }
-    return {
-      ok: true,
-      state: mergeWithDefaults(
-        candidate as Partial<LedgerState>,
-        createBlankCharacterState()
-      ),
-    };
-  } catch {
+  if (!rawText || !rawText.trim()) {
     return {
       ok: false,
-      error: 'Invalid JSON file. Could not parse ledger backup.',
+      error: 'Import failed: The selected backup file is empty.',
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Invalid JSON syntax: ${
+        err instanceof Error ? err.message : 'could not parse file'
+      }.`,
+    };
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      error: 'Import failed: File content is not a valid JSON object.',
+    };
+  }
+
+  const record = parsed as Record<string, unknown>;
+
+  if (
+    record.schema &&
+    typeof record.schema === 'string' &&
+    record.schema !== 'the-clinical-ledger'
+  ) {
+    return {
+      ok: false,
+      error: `Import failed: Unsupported schema "${record.schema}". Expected "the-clinical-ledger".`,
+    };
+  }
+
+  const candidate =
+    record.data && typeof record.data === 'object' && !Array.isArray(record.data)
+      ? (record.data as Partial<LedgerState>)
+      : (record as Partial<LedgerState>);
+
+  if (
+    !candidate ||
+    typeof candidate !== 'object' ||
+    (!candidate.identity && !candidate.abilities && !candidate.vitals)
+  ) {
+    return {
+      ok: false,
+      error:
+        'Incompatible ledger backup: Missing core character identity, abilities, or vitals data.',
+    };
+  }
+
+  try {
+    const merged = mergeWithDefaults(
+      candidate,
+      createBlankCharacterState()
+    );
+    return {
+      ok: true,
+      state: merged,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Import failed while processing character data: ${
+        err instanceof Error ? err.message : 'corrupted structure'
+      }`,
     };
   }
 }

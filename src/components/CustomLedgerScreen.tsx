@@ -1,5 +1,15 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { ChevronDown, Clock, EyeOff, FileText, Lock, Unlock } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ChevronDown,
+  Clock,
+  EyeOff,
+  FileText,
+  Lock,
+  RotateCcw,
+  Search,
+  Unlock,
+  X,
+} from 'lucide-react';
 import { LedgerState } from '../types/ledger';
 import { formatTimestamp } from '../utils/ledgerMath';
 
@@ -162,6 +172,19 @@ export const CustomLedgerScreen: React.FC<CustomLedgerScreenProps> = ({
   // Currently open Template Presets dropdown menu (at most one card open at a time)
   const [openMenuSectionId, setOpenMenuSectionId] = useState<string | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
+  const textareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+
+  // Quick panel search / filter
+  const [panelSearch, setPanelSearch] = useState('');
+
+  // Undo / Revert snapshot for accidental preset replacements
+  const [undoSnapshot, setUndoSnapshot] = useState<{
+    sectionId: string;
+    sectionTitle: string;
+    previousTitle: string;
+    previousContent: string;
+  } | null>(null);
+  const undoTimeoutRef = useRef<number | null>(null);
 
   // Pending confirmation when applying a preset to a section that already has content
   const [pendingPreset, setPendingPreset] = useState<{
@@ -197,20 +220,52 @@ export const CustomLedgerScreen: React.FC<CustomLedgerScreenProps> = ({
     (sec) => sec.isPrivate && !canViewPrivate
   ).length;
 
+  const filteredCustomLedger = useMemo(() => {
+    const q = panelSearch.trim().toLowerCase();
+    if (!q) return state.customLedger;
+    return state.customLedger.filter((sec) => {
+      const isMasked = sec.isPrivate && !canViewPrivate;
+      if (isMasked) return false;
+      return (
+        sec.title.toLowerCase().includes(q) ||
+        sec.content.toLowerCase().includes(q)
+      );
+    });
+  }, [state.customLedger, panelSearch, canViewPrivate]);
+
   const handleInsertTimestamp = (sectionId: string) => {
     if (readOnly) return;
     const stamp = `${formatTimestamp()} `;
-    onUpdateState((prev) => ({
-      ...prev,
-      customLedger: prev.customLedger.map((sec) =>
-        sec.id === sectionId
-          ? {
-              ...sec,
-              content: sec.content ? `${sec.content}\n${stamp}` : stamp,
-            }
-          : sec
-      ),
-    }));
+    const textarea = textareaRefs.current[sectionId];
+    if (textarea) {
+      const start = textarea.selectionStart ?? textarea.value.length;
+      const end = textarea.selectionEnd ?? textarea.value.length;
+      const currentVal = textarea.value;
+      const updated = currentVal.slice(0, start) + stamp + currentVal.slice(end);
+      onUpdateState((prev) => ({
+        ...prev,
+        customLedger: prev.customLedger.map((sec) =>
+          sec.id === sectionId ? { ...sec, content: updated } : sec
+        ),
+      }));
+      window.requestAnimationFrame(() => {
+        textarea.focus();
+        const cursor = start + stamp.length;
+        textarea.setSelectionRange(cursor, cursor);
+      });
+    } else {
+      onUpdateState((prev) => ({
+        ...prev,
+        customLedger: prev.customLedger.map((sec) =>
+          sec.id === sectionId
+            ? {
+                ...sec,
+                content: sec.content ? `${sec.content}\n${stamp}` : stamp,
+              }
+            : sec
+        ),
+      }));
+    }
   };
 
   const applyPreset = (
@@ -221,6 +276,23 @@ export const CustomLedgerScreen: React.FC<CustomLedgerScreenProps> = ({
     const preset = TEMPLATE_PRESETS.find((p) => p.id === presetId);
     if (!preset) return;
     const seededBody = preset.buildContent();
+    const currentSec = state.customLedger.find((s) => s.id === sectionId);
+
+    if (mode === 'replace' && currentSec) {
+      setUndoSnapshot({
+        sectionId,
+        sectionTitle: preset.title,
+        previousTitle: currentSec.title,
+        previousContent: currentSec.content,
+      });
+      if (undoTimeoutRef.current !== null) {
+        window.clearTimeout(undoTimeoutRef.current);
+      }
+      undoTimeoutRef.current = window.setTimeout(() => {
+        setUndoSnapshot(null);
+        undoTimeoutRef.current = null;
+      }, 8000);
+    }
 
     onUpdateState((prev) => ({
       ...prev,
@@ -244,6 +316,24 @@ export const CustomLedgerScreen: React.FC<CustomLedgerScreenProps> = ({
     }));
     setPendingPreset(null);
     setOpenMenuSectionId(null);
+  };
+
+  const handleUndoPreset = () => {
+    if (!undoSnapshot) return;
+    const { sectionId, previousTitle, previousContent } = undoSnapshot;
+    onUpdateState((prev) => ({
+      ...prev,
+      customLedger: prev.customLedger.map((sec) =>
+        sec.id === sectionId
+          ? { ...sec, title: previousTitle, content: previousContent }
+          : sec
+      ),
+    }));
+    setUndoSnapshot(null);
+    if (undoTimeoutRef.current !== null) {
+      window.clearTimeout(undoTimeoutRef.current);
+      undoTimeoutRef.current = null;
+    }
   };
 
   const handleSelectPreset = (sectionId: string, presetId: PresetId) => {
@@ -286,34 +376,88 @@ export const CustomLedgerScreen: React.FC<CustomLedgerScreenProps> = ({
           </p>
         </div>
 
-        {!readOnly && !covertUnlocked && maskedPrivateCount > 0 && (
-          <button
-            type="button"
-            onClick={onOpenDrawer}
-            className="px-2.5 py-1 text-[11px] font-mono rounded bg-[#171022] border border-[#581c87] hover:border-[#c084fc] text-[#c084fc] flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-          >
-            <Lock className="w-3 h-3" />
-            <span>
-              {maskedPrivateCount} Private Masked · Unlock (Ctrl+H)
-            </span>
-          </button>
-        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative min-w-[200px]">
+            <Search className="w-3.5 h-3.5 text-[#65766e] absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={panelSearch}
+              onChange={(e) => setPanelSearch(e.target.value)}
+              placeholder="Search custom panels..."
+              aria-label="Search custom panels"
+              className="ledger-input w-full pl-8 pr-7 py-1 text-xs"
+            />
+            {panelSearch.trim() && (
+              <button
+                type="button"
+                onClick={() => setPanelSearch('')}
+                aria-label="Clear panel search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-[#65766e] hover:text-[#d4e0da] cursor-pointer"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+
+          {!readOnly && !covertUnlocked && maskedPrivateCount > 0 && (
+            <button
+              type="button"
+              onClick={onOpenDrawer}
+              className="px-2.5 py-1 text-[11px] font-mono rounded bg-[#171022] border border-[#581c87] hover:border-[#c084fc] text-[#c084fc] flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+            >
+              <Lock className="w-3 h-3" />
+              <span>
+                {maskedPrivateCount} Private Masked · Unlock (Ctrl+H)
+              </span>
+            </button>
+          )}
+        </div>
       </div>
 
+      {panelSearch.trim() && (
+        <div className="flex items-center justify-between text-[11px] text-[#9eb0a7] px-1">
+          <span>
+            Showing {filteredCustomLedger.length} of {state.customLedger.length} panels
+          </span>
+          <button
+            type="button"
+            onClick={() => setPanelSearch('')}
+            className="text-[#c084fc] hover:underline cursor-pointer"
+          >
+            Clear Search
+          </button>
+        </div>
+      )}
+
       {/* Responsive 2×3 Grid of 6 Customizable Sections */}
-      <div
-        ref={gridRef}
-        className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
-      >
-        {state.customLedger.map((section, idx) => {
-          const isMasked = section.isPrivate && !canViewPrivate;
-          const matchedPreset = matchPresetByTitle(section.title);
-          const isMenuOpen = openMenuSectionId === section.id;
-          const pendingForCard =
-            pendingPreset?.sectionId === section.id ? pendingPreset : null;
-          const pendingTemplate = pendingForCard
-            ? TEMPLATE_PRESETS.find((p) => p.id === pendingForCard.presetId)
-            : null;
+      {filteredCustomLedger.length === 0 ? (
+        <div className="surface-clinical rounded p-8 flex flex-col items-center justify-center text-center gap-2">
+          <p className="text-xs text-[#9eb0a7]">
+            No custom panels match &ldquo;{panelSearch}&rdquo;.
+          </p>
+          <button
+            type="button"
+            onClick={() => setPanelSearch('')}
+            className="px-3 py-1 text-xs rounded bg-[#171022] border border-[#581c87] hover:border-[#c084fc] text-[#c084fc] cursor-pointer"
+          >
+            Clear Search
+          </button>
+        </div>
+      ) : (
+        <div
+          ref={gridRef}
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+        >
+          {filteredCustomLedger.map((section) => {
+            const idx = state.customLedger.findIndex((s) => s.id === section.id);
+            const isMasked = section.isPrivate && !canViewPrivate;
+            const matchedPreset = matchPresetByTitle(section.title);
+            const isMenuOpen = openMenuSectionId === section.id;
+            const pendingForCard =
+              pendingPreset?.sectionId === section.id ? pendingPreset : null;
+            const pendingTemplate = pendingForCard
+              ? TEMPLATE_PRESETS.find((p) => p.id === pendingForCard.presetId)
+              : null;
 
           if (isMasked) {
             return (
@@ -602,6 +746,9 @@ export const CustomLedgerScreen: React.FC<CustomLedgerScreenProps> = ({
                 </div>
               ) : (
                 <textarea
+                  ref={(el) => {
+                    textareaRefs.current[section.id] = el;
+                  }}
                   value={section.content}
                   onChange={(e) =>
                     onUpdateState((prev) => ({
@@ -621,6 +768,35 @@ export const CustomLedgerScreen: React.FC<CustomLedgerScreenProps> = ({
           );
         })}
       </div>
+    )}
+
+      {/* Accidental Preset Replacement Revert / Undo Floating Toast */}
+      {undoSnapshot && !readOnly && (
+        <aside
+          aria-label="Undo preset replacement notice"
+          className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 bg-[#171022] border border-[#c084fc] text-[#d4e0da] px-3.5 py-2 rounded-lg shadow-2xl flex items-center gap-3 text-xs"
+        >
+          <span>
+            Replaced with{' '}
+            <strong className="text-[#c084fc]">{undoSnapshot.sectionTitle}</strong>
+          </span>
+          <button
+            type="button"
+            onClick={handleUndoPreset}
+            className="px-2.5 py-1 rounded bg-[#a855f7] hover:bg-[#c084fc] text-[#080c0a] font-bold cursor-pointer transition-colors"
+          >
+            Undo
+          </button>
+          <button
+            type="button"
+            onClick={() => setUndoSnapshot(null)}
+            className="text-[#9eb0a7] hover:text-[#d4e0da] p-0.5 cursor-pointer"
+            aria-label="Dismiss undo notification"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </aside>
+      )}
     </div>
   );
 };

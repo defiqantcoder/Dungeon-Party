@@ -59,6 +59,71 @@ export function getPassivePerception(state: LedgerState): number {
   return getPassiveSkill(state, 'perception', 'WIS');
 }
 
+export function getPassiveInvestigation(state: LedgerState): number {
+  return getPassiveSkill(state, 'investigation', 'INT');
+}
+
+export function getPassiveInsight(state: LedgerState): number {
+  return getPassiveSkill(state, 'insight', 'WIS');
+}
+
+export function getSpellSaveDc(
+  state: LedgerState,
+  ability: AbilityKey = 'INT'
+): number {
+  return 8 + state.proficiencyBonus + getAbilityMod(state.abilities[ability]);
+}
+
+export function getSpellAttackBonus(
+  state: LedgerState,
+  ability: AbilityKey = 'INT'
+): number {
+  return state.proficiencyBonus + getAbilityMod(state.abilities[ability]);
+}
+
+export function buildD20Expression(modifier: number): string {
+  return `1d20${modifier !== 0 ? formatSigned(modifier) : ''}`;
+}
+
+export function calculateRestoredHitDice(hitDiceTotal: number): number {
+  return Math.max(1, Math.floor(hitDiceTotal / 2));
+}
+
+export function parseHitDieSides(
+  hitDiceDie: string,
+  defaultSides: number = 8
+): number {
+  const match = hitDiceDie.match(/d(\d+)/i);
+  return match ? parseInt(match[1], 10) : defaultSides;
+}
+
+export function calculateHitDieHeal(dieRoll: number, conScore: number): number {
+  return Math.max(1, dieRoll + getAbilityMod(conScore));
+}
+
+export function calculateHpAdjustment(
+  currentHp: number,
+  maxHp: number,
+  currentTempHp: number,
+  amount: number,
+  direction: 'heal' | 'wound'
+): { hpCurrent: number; tempHp: number } {
+  let hp = currentHp;
+  let temp = currentTempHp;
+  if (direction === 'wound') {
+    let remaining = amount;
+    if (temp > 0) {
+      const absorbed = Math.min(temp, remaining);
+      temp -= absorbed;
+      remaining -= absorbed;
+    }
+    hp = Math.max(0, hp - remaining);
+  } else {
+    hp = Math.min(maxHp, hp + amount);
+  }
+  return { hpCurrent: hp, tempHp: temp };
+}
+
 export function getInitiative(state: LedgerState): number {
   if (
     state.vitals.initiativeOverride !== null &&

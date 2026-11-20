@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { X } from 'lucide-react';
 import { CoreSheetScreen } from './components/CoreSheetScreen';
 import { CustomLedgerScreen } from './components/CustomLedgerScreen';
 import { DiceDock } from './components/DiceDock';
@@ -100,12 +101,49 @@ export default function App() {
     []
   );
 
+  const [undoSnapshot, setUndoSnapshot] = useState<{
+    state: LedgerState;
+    rolls: RollRecord[];
+    label: string;
+  } | null>(null);
+
   const handleCreateBlankCharacter = useCallback(() => {
+    setUndoSnapshot({
+      state,
+      rolls: rollHistory,
+      label: state.identity.name.trim() || 'Character Sheet',
+    });
     setState(createBlankCharacterState());
     setRollHistory([]);
     setCovertUnlocked(false);
     setActiveScreen('core');
-  }, []);
+  }, [state, rollHistory]);
+
+  const handleReplaceState = useCallback(
+    (next: LedgerState) => {
+      setUndoSnapshot({
+        state,
+        rolls: rollHistory,
+        label: state.identity.name.trim() || 'Character Sheet',
+      });
+      setState(next);
+    },
+    [state, rollHistory]
+  );
+
+  const handleUndoReset = useCallback(() => {
+    if (!undoSnapshot) return;
+    setState(undoSnapshot.state);
+    setRollHistory(undoSnapshot.rolls);
+    setUndoSnapshot(null);
+  }, [undoSnapshot]);
+
+  // Auto-clear undo snapshot after 14 seconds
+  useEffect(() => {
+    if (!undoSnapshot) return;
+    const timer = window.setTimeout(() => setUndoSnapshot(null), 14000);
+    return () => window.clearTimeout(timer);
+  }, [undoSnapshot]);
 
   const pushRoll = useCallback((record: RollRecord) => {
     setRollHistory((prev) => [record, ...prev].slice(0, MAX_ROLL_HISTORY));
@@ -293,6 +331,35 @@ export default function App() {
         </div>
       )}
 
+      {/* Undo / Revert Toast for Accidental Reset or Replace */}
+      {undoSnapshot && !isPartyMode && (
+        <div className="bg-[#171022] border-b border-[#a855f7] px-4 py-2 flex items-center justify-between gap-3 text-xs text-[#d4e0da] shadow-lg animate-in fade-in duration-150">
+          <div className="max-w-[1440px] mx-auto w-full flex items-center justify-between gap-2">
+            <span>
+              Character reset or replaced. Revert back to{' '}
+              <strong className="text-[#c084fc]">{undoSnapshot.label}</strong>?
+            </span>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleUndoReset}
+                className="px-2.5 py-1 rounded bg-[#a855f7] hover:bg-[#c084fc] text-[#080c0a] font-bold cursor-pointer"
+              >
+                Undo / Restore
+              </button>
+              <button
+                type="button"
+                onClick={() => setUndoSnapshot(null)}
+                className="text-[#9eb0a7] hover:text-[#d4e0da] p-1 cursor-pointer"
+                aria-label="Dismiss undo toast"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main Workspace Viewport */}
       <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-4 pb-36 md:pb-32">
         {activeScreen === 'core' && (
@@ -412,7 +479,7 @@ export default function App() {
           covertUnlocked={covertUnlocked}
           onClose={() => setEditorOpen(false)}
           onUpdateState={handleUpdateState}
-          onReplaceState={(next) => setState(next)}
+          onReplaceState={handleReplaceState}
           onNewBlankCharacter={handleCreateBlankCharacter}
         />
       )}

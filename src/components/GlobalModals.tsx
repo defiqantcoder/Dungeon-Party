@@ -28,6 +28,7 @@ import {
   SkillEntry,
 } from '../types/ledger';
 import {
+  buildD20Expression,
   createId,
   formatSigned,
   generateMarkdownSnapshot,
@@ -437,17 +438,17 @@ export const FullEditorModal: React.FC<FullEditorModalProps> = ({
       if (!skill) return;
       const total = getSkillTotal(state, skill);
       label = skill.name;
-      expression = `1d20${total !== 0 ? formatSigned(total) : ''}`;
+      expression = buildD20Expression(total);
     } else if (quickFillSource.startsWith('save:')) {
       const ab = quickFillSource.slice(5) as AbilityKey;
       const total = getSaveTotal(state, ab);
       label = `${ab} Save`;
-      expression = `1d20${total !== 0 ? formatSigned(total) : ''}`;
+      expression = buildD20Expression(total);
     } else if (quickFillSource.startsWith('msave:')) {
       const ab = quickFillSource.slice(6) as AbilityKey;
       const total = getSaveTotal(state, ab);
       label = `${ab} Magic Save`;
-      expression = `1d20${total !== 0 ? formatSigned(total) : ''}`;
+      expression = buildD20Expression(total);
       mode = 'adv';
     }
 

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -12,12 +12,14 @@ import {
   Lock,
   Package,
   Plus,
+  RotateCcw,
   Search,
   Sparkles,
   Swords,
   Trash2,
   Unlock,
   Wrench,
+  X,
 } from 'lucide-react';
 import {
   AttackEntry,
@@ -29,7 +31,13 @@ import {
   SpellEntry,
   SupplyCounter,
 } from '../types/ledger';
-import { createId, formatTimestamp } from '../utils/ledgerMath';
+import {
+  createId,
+  formatSigned,
+  formatTimestamp,
+  getSpellAttackBonus,
+  getSpellSaveDc,
+} from '../utils/ledgerMath';
 
 interface GearNotesScreenProps {
   state: LedgerState;
@@ -101,6 +109,96 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
   const [newLogTags, setNewLogTags] = useState('');
   const [newLogPrivate, setNewLogPrivate] = useState(false);
 
+  // Undo / Revert snapshot for accidental deletions during live play
+  const [deletedSnapshot, setDeletedSnapshot] = useState<{
+    kind: 'attack' | 'spell' | 'gear' | 'supply' | 'cost' | 'log';
+    name: string;
+    item: any;
+  } | null>(null);
+  const undoTimeoutRef = useRef<number | null>(null);
+  const scratchpadRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const handleDeleteWithUndo = (
+    kind: 'attack' | 'spell' | 'gear' | 'supply' | 'cost' | 'log',
+    name: string,
+    item: any,
+    deleteFn: () => void
+  ) => {
+    deleteFn();
+    setDeletedSnapshot({ kind, name, item });
+    if (undoTimeoutRef.current !== null) {
+      window.clearTimeout(undoTimeoutRef.current);
+    }
+    undoTimeoutRef.current = window.setTimeout(() => {
+      setDeletedSnapshot(null);
+      undoTimeoutRef.current = null;
+    }, 7000);
+  };
+
+  const handleUndoDelete = () => {
+    if (!deletedSnapshot) return;
+    const { kind, item } = deletedSnapshot;
+    onUpdateState((prev) => {
+      switch (kind) {
+        case 'attack':
+          return {
+            ...prev,
+            gearAndNotes: {
+              ...prev.gearAndNotes,
+              attacks: [...prev.gearAndNotes.attacks, item],
+            },
+          };
+        case 'spell':
+          return {
+            ...prev,
+            gearAndNotes: {
+              ...prev.gearAndNotes,
+              spells: [...prev.gearAndNotes.spells, item],
+            },
+          };
+        case 'gear':
+          return {
+            ...prev,
+            gearAndNotes: {
+              ...prev.gearAndNotes,
+              gear: [...prev.gearAndNotes.gear, item],
+            },
+          };
+        case 'supply':
+          return {
+            ...prev,
+            gearAndNotes: {
+              ...prev.gearAndNotes,
+              miniatureSupplies: [...prev.gearAndNotes.miniatureSupplies, item],
+            },
+          };
+        case 'cost':
+          return {
+            ...prev,
+            gearAndNotes: {
+              ...prev.gearAndNotes,
+              sessionCosts: [item, ...prev.gearAndNotes.sessionCosts],
+            },
+          };
+        case 'log':
+          return {
+            ...prev,
+            gearAndNotes: {
+              ...prev.gearAndNotes,
+              campaignLog: [item, ...prev.gearAndNotes.campaignLog],
+            },
+          };
+        default:
+          return prev;
+      }
+    });
+    setDeletedSnapshot(null);
+    if (undoTimeoutRef.current !== null) {
+      window.clearTimeout(undoTimeoutRef.current);
+      undoTimeoutRef.current = null;
+    }
+  };
+
   const equippedGear = useMemo(
     () => state.gearAndNotes.gear.filter((g) => g.equipped),
     [state.gearAndNotes.gear]
@@ -125,6 +223,16 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
       entry.tags.forEach((t) => tagSet.add(t))
     );
     return Array.from(tagSet).sort();
+  }, [visibleCampaignLogs]);
+
+  const tagCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    visibleCampaignLogs.forEach((entry) => {
+      entry.tags.forEach((t) => {
+        counts[t] = (counts[t] || 0) + 1;
+      });
+    });
+    return counts;
   }, [visibleCampaignLogs]);
 
   const filteredLogs = useMemo(() => {
@@ -329,15 +437,34 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
   const insertScratchpadTimestamp = () => {
     if (readOnly) return;
     const stamp = `${formatTimestamp()} `;
-    onUpdateState((prev) => ({
-      ...prev,
-      gearAndNotes: {
-        ...prev.gearAndNotes,
-        scratchpad: prev.gearAndNotes.scratchpad
-          ? `${prev.gearAndNotes.scratchpad}\n${stamp}`
-          : stamp,
-      },
-    }));
+    const el = scratchpadRef.current;
+    if (el) {
+      const start = el.selectionStart ?? el.value.length;
+      const end = el.selectionEnd ?? el.value.length;
+      const current = state.gearAndNotes.scratchpad;
+      const next = current.slice(0, start) + stamp + current.slice(end);
+      onUpdateState((prev) => ({
+        ...prev,
+        gearAndNotes: {
+          ...prev.gearAndNotes,
+          scratchpad: next,
+        },
+      }));
+      window.setTimeout(() => {
+        el.focus();
+        el.setSelectionRange(start + stamp.length, start + stamp.length);
+      }, 0);
+    } else {
+      onUpdateState((prev) => ({
+        ...prev,
+        gearAndNotes: {
+          ...prev.gearAndNotes,
+          scratchpad: prev.gearAndNotes.scratchpad
+            ? `${prev.gearAndNotes.scratchpad}\n${stamp}`
+            : stamp,
+        },
+      }));
+    }
   };
 
   const handleAddLog = (e: React.FormEvent) => {
@@ -457,13 +584,15 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
               <button
                 type="button"
                 onClick={() =>
-                  onUpdateState((prev) => ({
-                    ...prev,
-                    gearAndNotes: {
-                      ...prev.gearAndNotes,
-                      gear: prev.gearAndNotes.gear.filter((g) => g.id !== item.id),
-                    },
-                  }))
+                  handleDeleteWithUndo('gear', item.name, item, () => {
+                    onUpdateState((prev) => ({
+                      ...prev,
+                      gearAndNotes: {
+                        ...prev.gearAndNotes,
+                        gear: prev.gearAndNotes.gear.filter((g) => g.id !== item.id),
+                      },
+                    }));
+                  })
                 }
                 className="p-1 text-[#65766e] hover:text-[#ff4d4d] cursor-pointer"
                 aria-label={`Delete ${item.name}`}
@@ -686,15 +815,17 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
                           <button
                             type="button"
                             onClick={() =>
-                              onUpdateState((prev) => ({
-                                ...prev,
-                                gearAndNotes: {
-                                  ...prev.gearAndNotes,
-                                  attacks: prev.gearAndNotes.attacks.filter(
-                                    (a) => a.id !== atk.id
-                                  ),
-                                },
-                              }))
+                              handleDeleteWithUndo('attack', atk.name, atk, () => {
+                                onUpdateState((prev) => ({
+                                  ...prev,
+                                  gearAndNotes: {
+                                    ...prev.gearAndNotes,
+                                    attacks: prev.gearAndNotes.attacks.filter(
+                                      (a) => a.id !== atk.id
+                                    ),
+                                  },
+                                }));
+                              })
                             }
                             aria-label={`Delete ${atk.name}`}
                             className="p-1 text-[#65766e] hover:text-[#ff4d4d] cursor-pointer"
@@ -817,10 +948,18 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
           className="surface-clinical rounded p-4 flex flex-col gap-3"
         >
           <div className="flex items-center justify-between gap-2 border-b border-[#2e243b] pb-2">
-            <h2 className="font-display text-sm uppercase tracking-[0.08em] text-[#9eb0a7] flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-[#a855f7]" />
-              <span>Spells &amp; Slots</span>
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 className="font-display text-sm uppercase tracking-[0.08em] text-[#9eb0a7] flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-[#a855f7]" />
+                <span>Spells &amp; Slots</span>
+              </h2>
+              <span
+                className="font-mono text-[10px] text-[#c084fc] bg-[#171022] border border-[#2e243b] px-1.5 py-0.5 rounded"
+                title="Spell Save DC and Spell Attack Bonus (INT)"
+              >
+                DC {getSpellSaveDc(state, 'INT')} · {formatSigned(getSpellAttackBonus(state, 'INT'))}
+              </span>
+            </div>
             {!readOnly && (
               <div className="flex items-center gap-2.5 shrink-0">
                 <button
@@ -1013,15 +1152,17 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
                         <button
                           type="button"
                           onClick={() =>
-                            onUpdateState((prev) => ({
-                              ...prev,
-                              gearAndNotes: {
-                                ...prev.gearAndNotes,
-                                spells: prev.gearAndNotes.spells.filter(
-                                  (s) => s.id !== spell.id
-                                ),
-                              },
-                            }))
+                            handleDeleteWithUndo('spell', spell.name, spell, () => {
+                              onUpdateState((prev) => ({
+                                ...prev,
+                                gearAndNotes: {
+                                  ...prev.gearAndNotes,
+                                  spells: prev.gearAndNotes.spells.filter(
+                                    (s) => s.id !== spell.id
+                                  ),
+                                },
+                              }));
+                            })
                           }
                           className="p-1 text-[#65766e] hover:text-[#ff4d4d] cursor-pointer"
                           aria-label={`Delete ${spell.name}`}
@@ -1395,16 +1536,18 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
                           <button
                             type="button"
                             onClick={() =>
-                              onUpdateState((prev) => ({
-                                ...prev,
-                                gearAndNotes: {
-                                  ...prev.gearAndNotes,
-                                  miniatureSupplies:
-                                    prev.gearAndNotes.miniatureSupplies.filter(
-                                      (item) => item.id !== sup.id
-                                    ),
-                                },
-                              }))
+                              handleDeleteWithUndo('supply', sup.name, sup, () => {
+                                onUpdateState((prev) => ({
+                                  ...prev,
+                                  gearAndNotes: {
+                                    ...prev.gearAndNotes,
+                                    miniatureSupplies:
+                                      prev.gearAndNotes.miniatureSupplies.filter(
+                                        (item) => item.id !== sup.id
+                                      ),
+                                  },
+                                }));
+                              })
                             }
                             className="p-1 text-[#65766e] hover:text-[#ff4d4d] cursor-pointer"
                             aria-label={`Delete ${sup.name}`}
@@ -1629,15 +1772,17 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
                         <button
                           type="button"
                           onClick={() =>
-                            onUpdateState((prev) => ({
-                              ...prev,
-                              gearAndNotes: {
-                                ...prev.gearAndNotes,
-                                sessionCosts: prev.gearAndNotes.sessionCosts.filter(
-                                  (item) => item.id !== c.id
-                                ),
-                              },
-                            }))
+                            handleDeleteWithUndo('cost', c.description || 'cost entry', c, () => {
+                              onUpdateState((prev) => ({
+                                ...prev,
+                                gearAndNotes: {
+                                  ...prev.gearAndNotes,
+                                  sessionCosts: prev.gearAndNotes.sessionCosts.filter(
+                                    (item) => item.id !== c.id
+                                  ),
+                                },
+                              }));
+                            })
                           }
                           className="text-[#65766e] hover:text-[#ff4d4d] cursor-pointer p-0.5"
                           aria-label={`Delete cost ${c.description}`}
@@ -1742,6 +1887,7 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
             </div>
           ) : (
             <textarea
+              ref={scratchpadRef}
               rows={5}
               value={state.gearAndNotes.scratchpad}
               onChange={(e) =>
@@ -1790,8 +1936,18 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
                 value={logSearch}
                 onChange={(e) => setLogSearch(e.target.value)}
                 placeholder="Search log entries or tags..."
-                className="ledger-input w-full pl-8 pr-2 py-1.5 text-xs"
+                className="ledger-input w-full pl-8 pr-8 py-1.5 text-xs"
               />
+              {logSearch.trim() && (
+                <button
+                  type="button"
+                  onClick={() => setLogSearch('')}
+                  aria-label="Clear log search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-[#65766e] hover:text-[#d4e0da] cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
 
             {allTags.length > 0 && (
@@ -1805,7 +1961,7 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
                       : 'bg-[#080c0a] border-[#2e243b] text-[#9eb0a7]'
                   }`}
                 >
-                  All
+                  All ({visibleCampaignLogs.length})
                 </button>
                 {allTags.map((tag) => (
                   <button
@@ -1818,9 +1974,30 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
                         : 'bg-[#080c0a] border-[#2e243b] text-[#9eb0a7]'
                     }`}
                   >
-                    #{tag}
+                    #{tag} ({tagCounts[tag] ?? 0})
                   </button>
                 ))}
+              </div>
+            )}
+
+            {(logSearch.trim() || activeTag !== 'ALL') && (
+              <div className="flex items-center justify-between text-[11px] text-[#9eb0a7] px-0.5">
+                <span>
+                  Showing {filteredLogs.length} of {visibleCampaignLogs.length} entries
+                  {activeTag !== 'ALL' && (
+                    <span className="font-mono text-[#c084fc] ml-1">#{activeTag}</span>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLogSearch('');
+                    setActiveTag('ALL');
+                  }}
+                  className="text-[#c084fc] hover:underline cursor-pointer"
+                >
+                  Reset filters
+                </button>
               </div>
             )}
           </div>
@@ -1953,15 +2130,17 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
                         <button
                           type="button"
                           onClick={() =>
-                            onUpdateState((prev) => ({
-                              ...prev,
-                              gearAndNotes: {
-                                ...prev.gearAndNotes,
-                                campaignLog: prev.gearAndNotes.campaignLog.filter(
-                                  (item) => item.id !== entry.id
-                                ),
-                              },
-                            }))
+                            handleDeleteWithUndo('log', entry.title || 'log entry', entry, () => {
+                              onUpdateState((prev) => ({
+                                ...prev,
+                                gearAndNotes: {
+                                  ...prev.gearAndNotes,
+                                  campaignLog: prev.gearAndNotes.campaignLog.filter(
+                                    (item) => item.id !== entry.id
+                                  ),
+                                },
+                              }));
+                            })
                           }
                           className="p-1 text-[#65766e] hover:text-[#ff4d4d] cursor-pointer"
                           aria-label={`Delete ${entry.title}`}
@@ -2035,6 +2214,33 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
           )}
         </section>
       </div>
+
+      {/* Accidental Deletion Revert / Undo Floating Toast */}
+      {deletedSnapshot && !readOnly && (
+        <aside
+          aria-label="Undo deletion notice"
+          className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 bg-[#171022] border border-[#c084fc] text-[#d4e0da] px-3.5 py-2 rounded-lg shadow-2xl flex items-center gap-3 text-xs"
+        >
+          <span>
+            Deleted <strong className="text-[#c084fc]">{deletedSnapshot.name}</strong>
+          </span>
+          <button
+            type="button"
+            onClick={handleUndoDelete}
+            className="px-2.5 py-1 rounded bg-[#a855f7] hover:bg-[#c084fc] text-[#080c0a] font-bold cursor-pointer transition-colors"
+          >
+            Undo
+          </button>
+          <button
+            type="button"
+            onClick={() => setDeletedSnapshot(null)}
+            className="text-[#9eb0a7] hover:text-[#d4e0da] p-0.5 cursor-pointer"
+            aria-label="Dismiss undo notification"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </aside>
+      )}
     </div>
   );
 };

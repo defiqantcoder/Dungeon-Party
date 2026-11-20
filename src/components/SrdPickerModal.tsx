@@ -351,36 +351,45 @@ export const SrdPickerModal: React.FC<SrdPickerModalProps> = ({
             {/* Filters */}
             <div className="flex flex-wrap items-center gap-2">
               {kind === 'spell' && (
-                <>
-                  <select
-                    value={spellClass}
-                    onChange={(e) => setSpellClass(e.target.value)}
-                    aria-label="Filter spells by class"
-                    className="ledger-input h-8 px-2 text-xs"
-                  >
-                    <option value="">Choose Class Filter…</option>
-                    {SRD_SPELL_CLASSES.map((cls) => (
-                      <option key={cls.id} value={cls.id}>
+                <div className="w-full flex items-center gap-1 overflow-x-auto pb-1 text-[11px] font-mono">
+                  <span className="text-[#9eb0a7] uppercase tracking-wider text-[10px] shrink-0 mr-1">
+                    Class:
+                  </span>
+                  {SRD_SPELL_CLASSES.map((cls) => {
+                    const isSelected = spellClass === cls.id;
+                    return (
+                      <button
+                        key={cls.id}
+                        type="button"
+                        onClick={() => setSpellClass(cls.id)}
+                        className={`px-2 py-0.5 rounded border transition-colors shrink-0 cursor-pointer ${
+                          isSelected
+                            ? 'bg-[#a855f7] border-[#c084fc] text-[#080c0a] font-bold'
+                            : 'bg-[#080c0a] border-[#2e243b] text-[#9eb0a7] hover:border-[#581c87] hover:text-[#d4e0da]'
+                        }`}
+                      >
                         {cls.label}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={spellLevelFilter}
-                    onChange={(e) => setSpellLevelFilter(e.target.value)}
-                    aria-label="Filter spells by level"
-                    disabled={!spellClass}
-                    className="ledger-input h-8 px-2 text-xs font-mono disabled:opacity-50"
-                  >
-                    <option value="all">All Levels</option>
-                    <option value="0">Cantrip (0)</option>
-                    {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((lvl) => (
-                      <option key={lvl} value={String(lvl)}>
-                        Level {lvl}
-                      </option>
-                    ))}
-                  </select>
-                </>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {kind === 'spell' && spellClass && (
+                <select
+                  value={spellLevelFilter}
+                  onChange={(e) => setSpellLevelFilter(e.target.value)}
+                  aria-label="Filter spells by level"
+                  className="ledger-input h-8 px-2 text-xs font-mono"
+                >
+                  <option value="all">All Levels</option>
+                  <option value="0">Cantrip (0)</option>
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((lvl) => (
+                    <option key={lvl} value={String(lvl)}>
+                      Level {lvl}
+                    </option>
+                  ))}
+                </select>
               )}
 
               <div className="relative flex-1 min-w-[180px]">
@@ -392,11 +401,21 @@ export const SrdPickerModal: React.FC<SrdPickerModalProps> = ({
                   disabled={kind === 'spell' && !spellClass}
                   placeholder={
                     kind === 'spell' && !spellClass
-                      ? 'Select a class filter first...'
+                      ? 'Select a class filter above...'
                       : `Search 2014 5e SRD ${kind}s...`
                   }
-                  className="ledger-input h-8 w-full pl-8 pr-2 text-xs disabled:opacity-50"
+                  className="ledger-input h-8 w-full pl-8 pr-7 text-xs disabled:opacity-50"
                 />
+                {query.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => setQuery('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[#9eb0a7] hover:text-[#d4e0da] p-0.5 cursor-pointer"
+                    title="Clear search"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
               </div>
 
               {servedFromCache && items.length > 0 && (
@@ -480,9 +499,35 @@ export const SrdPickerModal: React.FC<SrdPickerModalProps> = ({
                     </div>
                   </div>
                 ) : filteredItems.length === 0 ? (
-                  <div className="p-4 text-xs text-[#9eb0a7]">
-                    No matching 5e SRD entries. Try another filter or switch to Custom
-                    Entry.
+                  <div className="p-4 flex flex-col items-center justify-center gap-2.5 text-center my-auto">
+                    <p className="text-xs text-[#9eb0a7]">
+                      No 2014 5e SRD results found{query.trim() ? ` for "${query}"` : ''}.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (kind === 'spell') {
+                          setCustomSpell((p) => ({
+                            ...p,
+                            name: query.trim() || p.name,
+                          }));
+                        } else if (kind === 'gear') {
+                          setCustomGear((p) => ({
+                            ...p,
+                            name: query.trim() || p.name,
+                          }));
+                        } else if (kind === 'condition') {
+                          setCustomCond((p) => ({
+                            ...p,
+                            name: query.trim() || p.name,
+                          }));
+                        }
+                        setTab('custom');
+                      }}
+                      className="px-3 py-1.5 rounded bg-[#a855f7] hover:bg-[#c084fc] text-[#080c0a] text-xs font-semibold cursor-pointer"
+                    >
+                      + Create Custom Entry {query.trim() ? `"${query}"` : ''}
+                    </button>
                   </div>
                 ) : (
                   <div className="flex flex-col gap-0.5">
@@ -525,7 +570,32 @@ export const SrdPickerModal: React.FC<SrdPickerModalProps> = ({
                     <span>Loading SRD record…</span>
                   </div>
                 ) : detailError ? (
-                  <div className="text-xs text-[#ff4d4d] my-auto">{detailError}</div>
+                  <div className="flex flex-col items-center justify-center gap-2.5 my-auto p-4 text-center">
+                    <div className="text-xs text-[#ff4d4d] leading-relaxed">{detailError}</div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const selectedItem = items.find((i) => i.index === selectedIndex);
+                        if (selectedItem) {
+                          if (kind === 'spell') {
+                            setCustomSpell((p) => ({
+                              ...p,
+                              name: selectedItem.name,
+                              level: selectedItem.level ?? 0,
+                            }));
+                          } else if (kind === 'gear') {
+                            setCustomGear((p) => ({ ...p, name: selectedItem.name }));
+                          } else if (kind === 'condition') {
+                            setCustomCond((p) => ({ ...p, name: selectedItem.name }));
+                          }
+                        }
+                        setTab('custom');
+                      }}
+                      className="px-3 py-1.5 rounded bg-[#a855f7] hover:bg-[#c084fc] text-[#080c0a] text-xs font-semibold cursor-pointer"
+                    >
+                      Enter Details in Custom Entry
+                    </button>
+                  </div>
                 ) : kind === 'spell' && spellDetail ? (
                   <>
                     <div className="flex flex-col gap-2">
