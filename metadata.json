@@ -1,0 +1,8 @@
+{
+  "name": "The Clinical Ledger",
+  "description": "Responsive dark-mode character ledger web application for Pip (Player: Sinnoh) in The Quiet Age: A Red Star Rebellion Before the Awakening, featuring strict blank-slate initialization, Party Share View, covert arc lock, on-demand 5e SRD lookup, and persistent dice dock.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

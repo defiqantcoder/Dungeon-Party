@@ -1,0 +1,120 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Metrophobic", system-ui, -apple-system, sans-serif;
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-obsidian: #080c0a;
+  --color-clinical: #0b100e;
+  --color-resonant: #171022;
+  --color-modal: #0e0d16;
+  --color-plum-border: #2e243b;
+  --color-violet-border: #581c87;
+  --color-violet-accent: #a855f7;
+  --color-lavender: #c084fc;
+  --color-slate-ink: #d4e0da;
+  --color-slate-muted: #9eb0a7;
+  --color-signal-green: #4af626;
+  --color-signal-crimson: #ff4d4d;
+}
+
+@layer base {
+  html,
+  body {
+    background-color: #080c0a;
+    color: #d4e0da;
+    font-family: var(--font-sans);
+    color-scheme: dark;
+  }
+
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-display);
+  }
+
+  *:focus-visible {
+    outline: 1px solid #c084fc;
+    outline-offset: 2px;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.surface-clinical {
+  background-color: #0b100e;
+  border: 1px solid #2e243b;
+}
+
+.surface-resonant {
+  background-color: #171022;
+  border: 1px solid #581c87;
+  box-shadow: inset 0 0 12px rgba(168, 85, 247, 0.08);
+}
+
+.surface-modal {
+  background-color: #0e0d16;
+  border: 1px solid #c084fc;
+  box-shadow: 0 0 24px rgba(192, 132, 252, 0.15);
+}
+
+.glow-green {
+  box-shadow: 0 0 16px rgba(74, 246, 38, 0.18);
+}
+
+.glow-crimson {
+  box-shadow: 0 0 16px rgba(255, 77, 77, 0.24);
+}
+
+.ledger-input {
+  background-color: #080c0a;
+  border: 1px solid #2e243b;
+  color: #d4e0da;
+  border-radius: 0.25rem;
+  transition: border-color 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ledger-input:focus {
+  outline: none;
+  border-color: #c084fc;
+  box-shadow: inset 0 0 6px rgba(192, 132, 252, 0.16);
+}
+
+.ledger-input::placeholder {
+  color: #65766e;
+}
+
+/* Custom subtle dark scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #080c0a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2e243b;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #581c87;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
