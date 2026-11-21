@@ -1,4 +1,31 @@
-import { AbilityKey, LedgerState, SkillEntry, SupplyCounter } from '../types/ledger';
+import {
+  AbilityKey,
+  AvatarGender,
+  AvatarRace,
+  LedgerState,
+  SkillEntry,
+  SupplyCounter,
+} from '../types/ledger';
+
+export const AVATAR_RACE_OPTIONS: {
+  id: AvatarRace;
+  label: string;
+  defaultSpeed: string;
+  shortTag: string;
+}[] = [
+  { id: 'gnome', label: 'Gnome', defaultSpeed: '25 ft.', shortTag: 'GNM' },
+  { id: 'human', label: 'Human', defaultSpeed: '30 ft.', shortTag: 'HUM' },
+  { id: 'elf', label: 'Elf', defaultSpeed: '30 ft.', shortTag: 'ELF' },
+  { id: 'dwarf', label: 'Dwarf', defaultSpeed: '25 ft.', shortTag: 'DWF' },
+  { id: 'halfling', label: 'Halfling', defaultSpeed: '25 ft.', shortTag: 'HLF' },
+  { id: 'dragonborn', label: 'Dragonborn', defaultSpeed: '30 ft.', shortTag: 'DRG' },
+  { id: 'tiefling', label: 'Tiefling', defaultSpeed: '30 ft.', shortTag: 'TIF' },
+  { id: 'half-orc', label: 'Half-Orc', defaultSpeed: '30 ft.', shortTag: 'ORC' },
+  { id: 'half-elf', label: 'Half-Elf', defaultSpeed: '30 ft.', shortTag: 'H-E' },
+  { id: 'tabaxi', label: 'Tabaxi', defaultSpeed: '30 ft.', shortTag: 'TAB' },
+  { id: 'warforged', label: 'Warforged', defaultSpeed: '30 ft.', shortTag: 'WRF' },
+  { id: 'aasimar', label: 'Aasimar', defaultSpeed: '30 ft.', shortTag: 'AAS' },
+];
 
 export const DEFAULT_MINIATURE_SUPPLIES: SupplyCounter[] = [
   {
@@ -118,20 +145,38 @@ export const DEFAULT_PIP_MACROS: LedgerState['customMacros'] = [
   { slot: 9, label: '', expression: '', mode: 'normal' },
 ];
 
-export function createBlankCharacterState(): LedgerState {
+export interface BlankCharacterOptions {
+  name?: string;
+  player?: string;
+  occupation?: string;
+  avatarRace?: AvatarRace;
+  avatarGender?: AvatarGender;
+  hpMax?: number;
+}
+
+export function createBlankCharacterState(
+  options: BlankCharacterOptions = {}
+): LedgerState {
+  const raceId: AvatarRace = options.avatarRace ?? 'human';
+  const raceMeta = AVATAR_RACE_OPTIONS.find((r) => r.id === raceId);
+  const hpMax = Math.max(1, Math.round(options.hpMax ?? 1));
+  const isGnome = raceId === 'gnome';
+
   return {
-    version: 3,
+    version: 4,
     identity: {
-      name: '',
-      player: '',
+      name: options.name ?? '',
+      player: options.player ?? '',
       campaign: '',
       setting: '',
-      race: '',
+      race: options.avatarRace ? raceMeta?.label ?? '' : '',
       alignment: '',
-      occupation: '',
+      occupation: options.occupation ?? '',
       specialty: '',
       portraitStandard: null,
       portraitVessel: null,
+      avatarRace: raceId,
+      avatarGender: options.avatarGender ?? 'male',
     },
     abilities: {
       STR: 10,
@@ -150,14 +195,14 @@ export function createBlankCharacterState(): LedgerState {
       WIS: false,
       CHA: false,
     },
-    gnomeCunningMagicAdv: [],
+    gnomeCunningMagicAdv: isGnome ? ['INT', 'WIS', 'CHA'] : [],
     skills: createBlankSkills(),
     vitals: {
       ac: 10,
       initiativeOverride: null,
-      speed: '30 ft.',
-      hpCurrent: 1,
-      hpMax: 1,
+      speed: raceMeta?.defaultSpeed ?? '30 ft.',
+      hpCurrent: hpMax,
+      hpMax,
       tempHp: 0,
       hitDiceDie: '1d8',
       hitDiceTotal: 1,
@@ -173,7 +218,14 @@ export function createBlankCharacterState(): LedgerState {
         exhaustion: 0,
         extra: [],
       },
+      actionEconomy: {
+        actionUsed: false,
+        bonusActionUsed: false,
+        reactionUsed: false,
+        movementUsed: 0,
+      },
     },
+    features: [],
     persona: {
       traits: '',
       ideals: '',
@@ -197,7 +249,9 @@ export function createBlankCharacterState(): LedgerState {
       gear: [],
       miniatureSupplies: [],
       currency: {
+        pp: 0,
         gp: 0,
+        ep: 0,
         sp: 0,
         cp: 0,
       },
@@ -213,12 +267,13 @@ export function createBlankCharacterState(): LedgerState {
       isPrivate: false,
     })),
     customMacros: createBlankMacros(),
+    textBoxLayout: {},
   };
 }
 
 export function createInitialLedgerState(): LedgerState {
   return {
-    version: 3,
+    version: 4,
     identity: {
       name: 'Pip',
       player: 'Sinnoh',
@@ -230,6 +285,8 @@ export function createInitialLedgerState(): LedgerState {
       specialty: 'Memory and Trauma Care Specialist',
       portraitStandard: null,
       portraitVessel: null,
+      avatarRace: 'gnome',
+      avatarGender: 'male',
     },
     abilities: {
       STR: 14,
@@ -271,7 +328,14 @@ export function createInitialLedgerState(): LedgerState {
         exhaustion: 0,
         extra: [],
       },
+      actionEconomy: {
+        actionUsed: false,
+        bonusActionUsed: false,
+        reactionUsed: false,
+        movementUsed: 0,
+      },
     },
+    features: [],
     persona: {
       traits:
         'Clockwork & Watchmaking Hobbyist — pocket watches, precision chronometers, and tiny clockwork automatons.',
@@ -296,7 +360,9 @@ export function createInitialLedgerState(): LedgerState {
       gear: [],
       miniatureSupplies: DEFAULT_MINIATURE_SUPPLIES.map((s) => ({ ...s })),
       currency: {
+        pp: 0,
         gp: 0,
+        ep: 0,
         sp: 0,
         cp: 0,
       },
@@ -312,5 +378,6 @@ export function createInitialLedgerState(): LedgerState {
       isPrivate: false,
     })),
     customMacros: DEFAULT_PIP_MACROS.map((m) => ({ ...m })),
+    textBoxLayout: {},
   };
 }

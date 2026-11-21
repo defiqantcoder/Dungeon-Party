@@ -1,7 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Check,
   Clock,
+  Coins,
   Dices,
   Edit3,
   Heart,
@@ -9,6 +11,7 @@ import {
   Minus,
   Moon,
   Plus,
+  RotateCcw,
   Shield,
   SlidersHorizontal,
   Sparkles,
@@ -16,19 +19,28 @@ import {
   Trash2,
   Unlock,
   X,
+  Zap,
 } from 'lucide-react';
 import { ABILITY_KEYS, ABILITY_LABELS } from '../data/defaultState';
 import {
   AbilityKey,
+  AvatarGender,
+  AvatarRace,
+  CurrencyDenom,
+  CurrencyWallet,
+  FeatureResource,
   LedgerState,
   ProficiencyRank,
+  RechargeRule,
   RollMode,
+  SessionCostLine,
   SkillEntry,
+  TextBoxLayoutItem,
+  TransactionType,
 } from '../types/ledger';
 import {
-  calculateHitDieHeal,
   calculateHpAdjustment,
-  calculateRestoredHitDice,
+  calculateTotalGoldValue,
   createId,
   formatSigned,
   formatTimestamp,
@@ -39,10 +51,13 @@ import {
   getPassivePerception,
   getSaveTotal,
   getSkillTotal,
-  parseHitDieSides,
+  parseSpeedFeet,
 } from '../utils/ledgerMath';
 import { EditorTab } from './GlobalModals';
+import { MovableResizableBox } from './MovableResizableBox';
+import { PersonaLineList } from './PersonaLineList';
 import { ReactivePortrait } from './ReactivePortrait';
+import { RestWorkflowModal } from './RestWorkflowModal';
 
 interface CoreSheetScreenProps {
   state: LedgerState;
@@ -103,12 +118,82 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
   const [newSkillName, setNewSkillName] = useState('');
   const [newSkillAbility, setNewSkillAbility] = useState<AbilityKey>('INT');
   const [newSkillRank, setNewSkillRank] = useState<ProficiencyRank>('prof');
-  const [restNotice, setRestNotice] = useState<string | null>(null);
+  const [restModalType, setRestModalType] = useState<'short' | 'long' | null>(null);
+  const [concCheck, setConcCheck] = useState<{ damage: number; dc: number } | null>(null);
+  const [showAddFeature, setShowAddFeature] = useState(false);
+  const [newFeatureName, setNewFeatureName] = useState('');
+  const [newFeatureMax, setNewFeatureMax] = useState(1);
+  const [newFeatureRecharge, setNewFeatureRecharge] = useState<RechargeRule>('short');
+  const [newFeatureNotes, setNewFeatureNotes] = useState('');
+  const [showQuickTx, setShowQuickTx] = useState(false);
+  const [quickTxType, setQuickTxType] = useState<TransactionType>('income');
+  const [quickTxAmount, setQuickTxAmount] = useState('');
+  const [quickTxCurrency, setQuickTxCurrency] = useState<CurrencyDenom>('GP');
+  const [quickTxDesc, setQuickTxDesc] = useState('');
+  const [quickTxDate, setQuickTxDate] = useState(() => {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  });
 
   const isEditing = !readOnly && editMode;
   const isCovertActive = !readOnly && covertUnlocked;
   const isClockworkMode = isCovertActive && state.covert.clockworkVesselActive;
   const isDown = state.vitals.hpCurrent <= 0;
+  const hpRatio = state.vitals.hpCurrent / Math.max(1, state.vitals.hpMax);
+  const isCritical = !isDown && hpRatio <= 0.25;
+  const isConcentrating = state.vitals.conditions.concentrating;
+  const maxSpeedFeet = parseSpeedFeet(state.vitals.speed);
+  const actionEconomy = state.vitals.actionEconomy ?? {
+    actionUsed: false,
+    bonusActionUsed: false,
+    reactionUsed: false,
+    movementUsed: 0,
+  };
+  const features = state.features ?? [];
+  const totalGoldValue = calculateTotalGoldValue(state.gearAndNotes.currency);
+
+  const coreBoxIds = ['core-persona', 'core-clinical-notes', 'core-covert-arc'] as const;
+  const hasCustomCoreLayout = coreBoxIds.some((boxId) => {
+    const item = state.textBoxLayout?.[boxId];
+    return Boolean(
+      item &&
+        (item.x || item.y || item.width !== undefined || item.height !== undefined)
+    );
+  });
+
+  const handleUpdateBoxLayout = (
+    boxId: string,
+    next: TextBoxLayoutItem | null
+  ) => {
+    if (readOnly) return;
+    onUpdateState((prev) => {
+      const current = { ...(prev.textBoxLayout ?? {}) };
+      if (!next) {
+        delete current[boxId];
+      } else {
+        current[boxId] = next;
+      }
+      return {
+        ...prev,
+        textBoxLayout: current,
+      };
+    });
+  };
+
+  const handleResetCoreLayouts = () => {
+    if (readOnly) return;
+    onUpdateState((prev) => {
+      const current = { ...(prev.textBoxLayout ?? {}) };
+      coreBoxIds.forEach((id) => {
+        delete current[id];
+      });
+      return {
+        ...prev,
+        textBoxLayout: current,
+      };
+    });
+  };
   const isGnome = state.identity.race.toLowerCase().includes('gnome');
   const magicAdvAbilities = state.gnomeCunningMagicAdv;
   const passivePerception = getPassivePerception(state);
@@ -134,15 +219,22 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
     return { pinnedSkills: pinned, unproficientSkills: rest };
   }, [state.skills]);
 
-  const showNotice = (msg: string) => {
-    setRestNotice(msg);
-    window.setTimeout(() => setRestNotice(null), 2600);
+  const triggerConcentrationPrompt = (damage: number) => {
+    if (damage <= 0 || !state.vitals.conditions.concentrating) return;
+    setConcCheck({
+      damage,
+      dc: Math.max(10, Math.floor(damage / 2)),
+    });
   };
 
   const applyWoundOrHeal = (direction: 'wound' | 'heal') => {
     if (readOnly) return;
     const raw = parseInt(hpDeltaInput, 10);
     const amount = Number.isNaN(raw) || raw <= 0 ? 1 : raw;
+
+    if (direction === 'wound') {
+      triggerConcentrationPrompt(amount);
+    }
 
     onUpdateState((prev) => {
       const { hpCurrent, tempHp } = calculateHpAdjustment(
@@ -168,55 +260,131 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
     setHpDeltaInput('');
   };
 
-  const handleSpendHitDie = () => {
-    if (readOnly || hitDiceRemaining <= 0) return;
-    const conMod = getAbilityMod(state.abilities.CON);
-    const dieSides = parseHitDieSides(state.vitals.hitDiceDie, 8);
-    const roll = Math.floor(Math.random() * dieSides) + 1;
-    const healed = calculateHitDieHeal(roll, state.abilities.CON);
-
-    onRollExpression(
-      `1d${dieSides}${formatSigned(conMod)}`,
-      `Short Rest Hit Die (${state.vitals.hitDiceDie})`
-    );
-
+  const handleStepHpDown = () => {
+    if (readOnly) return;
+    if (state.vitals.hpCurrent > 0) {
+      triggerConcentrationPrompt(1);
+    }
     onUpdateState((prev) => ({
       ...prev,
       vitals: {
         ...prev.vitals,
-        hpCurrent: Math.min(prev.vitals.hpMax, prev.vitals.hpCurrent + healed),
-        hitDiceSpent: Math.min(
-          prev.vitals.hitDiceTotal,
-          prev.vitals.hitDiceSpent + 1
-        ),
+        hpCurrent: Math.max(0, prev.vitals.hpCurrent - 1),
       },
     }));
-    showNotice(`Short Rest: spent 1 Hit Die (+${healed} HP applied).`);
   };
 
-  const handleLongRest = () => {
+  const updateActionEconomy = (
+    patch: Partial<NonNullable<LedgerState['vitals']['actionEconomy']>>
+  ) => {
     if (readOnly) return;
-    onUpdateState((prev) => {
-      const recoveredHd = calculateRestoredHitDice(prev.vitals.hitDiceTotal);
-      return {
-        ...prev,
-        vitals: {
-          ...prev.vitals,
-          hpCurrent: prev.vitals.hpMax,
-          tempHp: 0,
-          hitDiceSpent: Math.max(0, prev.vitals.hitDiceSpent - recoveredHd),
-          deathSaves: { successes: 0, failures: 0 },
+    onUpdateState((prev) => ({
+      ...prev,
+      vitals: {
+        ...prev.vitals,
+        actionEconomy: {
+          ...(prev.vitals.actionEconomy ?? {
+            actionUsed: false,
+            bonusActionUsed: false,
+            reactionUsed: false,
+            movementUsed: 0,
+          }),
+          ...patch,
         },
-        gearAndNotes: {
-          ...prev.gearAndNotes,
-          spellSlots: prev.gearAndNotes.spellSlots.map((slot) => ({
-            ...slot,
-            used: 0,
-          })),
-        },
-      };
+      },
+    }));
+  };
+
+  const handleResetTurn = () => {
+    updateActionEconomy({
+      actionUsed: false,
+      bonusActionUsed: false,
+      reactionUsed: false,
+      movementUsed: 0,
     });
-    showNotice('Long Rest completed: HP, Death Saves, Spell Slots, and Hit Dice restored.');
+  };
+
+  const handleAddFeature = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (readOnly || !newFeatureName.trim()) return;
+    const entry: FeatureResource = {
+      id: createId('feat'),
+      name: newFeatureName.trim(),
+      max: Math.max(1, newFeatureMax),
+      used: 0,
+      recharge: newFeatureRecharge,
+      notes: newFeatureNotes.trim(),
+    };
+    onUpdateState((prev) => ({
+      ...prev,
+      features: [...(prev.features ?? []), entry],
+    }));
+    setNewFeatureName('');
+    setNewFeatureMax(1);
+    setNewFeatureRecharge('short');
+    setNewFeatureNotes('');
+    setShowAddFeature(false);
+  };
+
+  const handleToggleFeaturePip = (featureId: string, pipIndex: number) => {
+    if (readOnly) return;
+    onUpdateState((prev) => ({
+      ...prev,
+      features: (prev.features ?? []).map((f) => {
+        if (f.id !== featureId) return f;
+        const nextUsed = f.used === pipIndex ? pipIndex - 1 : pipIndex;
+        return { ...f, used: Math.max(0, Math.min(f.max, nextUsed)) };
+      }),
+    }));
+  };
+
+  const handleUpdateCurrencyCoin = (coinKey: keyof CurrencyWallet, value: number) => {
+    if (readOnly) return;
+    onUpdateState((prev) => ({
+      ...prev,
+      gearAndNotes: {
+        ...prev.gearAndNotes,
+        currency: {
+          ...prev.gearAndNotes.currency,
+          [coinKey]: Math.max(0, value),
+        },
+      },
+    }));
+  };
+
+  const handleAddQuickTx = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (readOnly || !quickTxDesc.trim() || !quickTxAmount.trim()) return;
+    const numericVal = Math.abs(parseInt(quickTxAmount.replace(/[^0-9]/g, ''), 10) || 0);
+    if (numericVal <= 0) return;
+
+    const entry: SessionCostLine = {
+      id: createId('tx'),
+      timestamp: formatTimestamp(),
+      date: quickTxDate,
+      type: quickTxType,
+      description: quickTxDesc.trim(),
+      notes: '',
+      amount: `${quickTxType === 'income' ? '+' : '-'}${numericVal}`,
+      currency: quickTxCurrency,
+    };
+
+    const coinKey = quickTxCurrency.toLowerCase() as keyof CurrencyWallet;
+    const delta = quickTxType === 'income' ? numericVal : -numericVal;
+
+    onUpdateState((prev) => ({
+      ...prev,
+      gearAndNotes: {
+        ...prev.gearAndNotes,
+        currency: {
+          ...prev.gearAndNotes.currency,
+          [coinKey]: Math.max(0, prev.gearAndNotes.currency[coinKey] + delta),
+        },
+        sessionCosts: [entry, ...prev.gearAndNotes.sessionCosts],
+      },
+    }));
+    setQuickTxAmount('');
+    setQuickTxDesc('');
   };
 
   const cycleSkillRank = (skillId: string) => {
@@ -430,12 +598,24 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
             </span>
             <span className="text-[11px] text-[#65766e] hidden sm:inline">
               {isEditing
-                ? 'Inline editing unlocked for abilities, Max HP, skills, and identity.'
+                ? 'Inline editing unlocked — drag text box bars to move and drag corners to resize.'
                 : 'Live Play mode — vitals, rolls, conditions, and notes are active.'}
             </span>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            {isEditing && hasCustomCoreLayout && (
+              <button
+                type="button"
+                onClick={handleResetCoreLayouts}
+                className="h-7 px-2.5 rounded text-xs text-[#9eb0a7] hover:text-[#d4e0da] bg-[#080c0a] border border-[#2e243b] hover:border-[#c084fc] transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                title="Reset moved and resized text boxes back to default layout"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Reset Boxes</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() => setEditMode((prev) => !prev)}
@@ -515,6 +695,9 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
               <div className="sm:col-span-5 lg:col-span-12 xl:col-span-5">
                 <ReactivePortrait
                   name={state.identity.name}
+                  avatarRace={state.identity.avatarRace}
+                  avatarGender={state.identity.avatarGender}
+                  occupation={state.identity.occupation}
                   hpCurrent={state.vitals.hpCurrent}
                   hpMax={state.vitals.hpMax}
                   concentrating={state.vitals.conditions.concentrating}
@@ -525,6 +708,19 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
                   portraitStandard={state.identity.portraitStandard}
                   portraitVessel={state.identity.portraitVessel}
                   readOnly={readOnly}
+                  isEditing={isEditing}
+                  onUpdateAvatar={(patch: {
+                    avatarRace?: AvatarRace;
+                    avatarGender?: AvatarGender;
+                  }) =>
+                    onUpdateState((prev) => ({
+                      ...prev,
+                      identity: {
+                        ...prev.identity,
+                        ...patch,
+                      },
+                    }))
+                  }
                   onUpdatePortrait={(slot, dataUrl) =>
                     onUpdateState((prev) => ({
                       ...prev,
@@ -834,31 +1030,235 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
                 )}
               </div>
             </div>
+            {/* Quick Coin Pouch Strip (PP / GP / EP / SP / CP + Quick Transaction Log) */}
+            <div className="pt-2 border-t border-[#2e243b] flex flex-col gap-1.5">
+              <div className="flex items-center justify-between gap-2 text-[10px] font-mono">
+                <span className="uppercase tracking-wider text-[#9eb0a7] flex items-center gap-1">
+                  <Coins className="w-3 h-3 text-[#d4af37]" />
+                  <span>Coin Pouch</span>
+                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[#c084fc] tabular-nums">
+                    {totalGoldValue.toFixed(totalGoldValue % 1 === 0 ? 0 : 2)} GP
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowQuickTx((prev) => !prev)}
+                    className={`px-1.5 py-0.5 rounded border text-[9px] uppercase transition-colors cursor-pointer ${
+                      showQuickTx
+                        ? 'bg-[#171022] border-[#c084fc] text-[#c084fc]'
+                        : 'bg-[#080c0a] border-[#2e243b] text-[#9eb0a7] hover:border-[#581c87] hover:text-[#d4e0da]'
+                    }`}
+                  >
+                    {showQuickTx
+                      ? 'Hide Log'
+                      : `Log (${state.gearAndNotes.sessionCosts.length})`}
+                  </button>
+                </div>
+              </div>
+              <div className="grid grid-cols-5 gap-1">
+                {(
+                  [
+                    { key: 'pp', label: 'PP', color: 'text-[#cbd5e1]' },
+                    { key: 'gp', label: 'GP', color: 'text-[#facc15]' },
+                    { key: 'ep', label: 'EP', color: 'text-[#60a5fa]' },
+                    { key: 'sp', label: 'SP', color: 'text-[#94a3b8]' },
+                    { key: 'cp', label: 'CP', color: 'text-[#fb923c]' },
+                  ] as const
+                ).map((coin) => (
+                  <div
+                    key={coin.key}
+                    className="bg-[#080c0a] border border-[#2e243b] rounded px-1.5 py-1 flex flex-col items-center"
+                  >
+                    <span className={`font-mono text-[9px] font-bold ${coin.color}`}>
+                      {coin.label}
+                    </span>
+                    {readOnly ? (
+                      <span className="font-mono text-xs text-[#d4e0da] tabular-nums">
+                        {state.gearAndNotes.currency[coin.key]}
+                      </span>
+                    ) : (
+                      <input
+                        type="number"
+                        min={0}
+                        value={state.gearAndNotes.currency[coin.key]}
+                        onChange={(e) =>
+                          handleUpdateCurrencyCoin(
+                            coin.key,
+                            parseInt(e.target.value, 10) || 0
+                          )
+                        }
+                        aria-label={`${coin.label} coins`}
+                        className="w-full bg-transparent text-center font-mono text-xs text-[#d4e0da] focus:text-[#c084fc] focus:outline-none tabular-nums"
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {showQuickTx && (
+                <div className="mt-1 bg-[#080c0a] border border-[#2e243b] rounded p-2 flex flex-col gap-2">
+                  {!readOnly && (
+                    <form onSubmit={handleAddQuickTx} className="flex flex-col gap-1.5">
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setQuickTxType('income')}
+                          className={`px-1.5 py-0.5 rounded font-mono text-[10px] border cursor-pointer ${
+                            quickTxType === 'income'
+                              ? 'bg-[#4af626]/20 border-[#4af626]/60 text-[#4af626] font-bold'
+                              : 'bg-[#0b100e] border-[#2e243b] text-[#9eb0a7]'
+                          }`}
+                        >
+                          + In
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setQuickTxType('expense')}
+                          className={`px-1.5 py-0.5 rounded font-mono text-[10px] border cursor-pointer ${
+                            quickTxType === 'expense'
+                              ? 'bg-[#ff4d4d]/20 border-[#ff4d4d]/60 text-[#ff4d4d] font-bold'
+                              : 'bg-[#0b100e] border-[#2e243b] text-[#9eb0a7]'
+                          }`}
+                        >
+                          - Out
+                        </button>
+                        <input
+                          type="number"
+                          min={1}
+                          value={quickTxAmount}
+                          onChange={(e) => setQuickTxAmount(e.target.value)}
+                          placeholder="Amt"
+                          aria-label="Quick transaction amount"
+                          className="ledger-input w-14 px-1.5 py-0.5 text-[11px] font-mono tabular-nums"
+                        />
+                        <select
+                          value={quickTxCurrency}
+                          onChange={(e) =>
+                            setQuickTxCurrency(e.target.value as CurrencyDenom)
+                          }
+                          aria-label="Quick transaction denomination"
+                          className="ledger-input px-1 py-0.5 text-[10px] font-mono"
+                        >
+                          <option value="PP">PP</option>
+                          <option value="GP">GP</option>
+                          <option value="EP">EP</option>
+                          <option value="SP">SP</option>
+                          <option value="CP">CP</option>
+                        </select>
+                        <input
+                          type="date"
+                          value={quickTxDate}
+                          onChange={(e) => setQuickTxDate(e.target.value)}
+                          aria-label="Quick transaction date"
+                          className="ledger-input flex-1 min-w-0 px-1 py-0.5 text-[10px] font-mono"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="text"
+                          value={quickTxDesc}
+                          onChange={(e) => setQuickTxDesc(e.target.value)}
+                          placeholder="Note (e.g., Sold loot in town)..."
+                          aria-label="Quick transaction note"
+                          className="ledger-input flex-1 min-w-0 px-2 py-0.5 text-[11px]"
+                        />
+                        <button
+                          type="submit"
+                          className="px-2 py-0.5 rounded bg-[#a855f7] hover:bg-[#c084fc] text-[#080c0a] font-mono text-[10px] font-bold cursor-pointer shrink-0"
+                        >
+                          Add
+                        </button>
+                      </div>
+                    </form>
+                  )}
+
+                  {state.gearAndNotes.sessionCosts.length === 0 ? (
+                    <p className="text-[11px] text-[#65766e]">
+                      No transactions recorded yet.
+                    </p>
+                  ) : (
+                    <div className="divide-y divide-[#1d1827] max-h-28 overflow-y-auto pr-0.5">
+                      {state.gearAndNotes.sessionCosts.slice(0, 5).map((tx) => {
+                        const isInc =
+                          tx.type === 'income' ||
+                          (!tx.type && tx.amount.trim().startsWith('+'));
+                        const cleanAmt = tx.amount.trim().replace(/^[+-]/, '');
+                        const dStamp =
+                          tx.date?.trim() ||
+                          tx.timestamp.match(/\d{4}-\d{2}-\d{2}/)?.[0] ||
+                          '';
+                        return (
+                          <div
+                            key={tx.id}
+                            className="py-1 flex items-center justify-between gap-2 text-[11px]"
+                          >
+                            <div className="min-w-0 flex items-center gap-1.5">
+                              {dStamp && (
+                                <span className="font-mono text-[9px] text-[#65766e] shrink-0 tabular-nums">
+                                  {dStamp}
+                                </span>
+                              )}
+                              <span className="text-[#d4e0da] truncate">
+                                {tx.description}
+                              </span>
+                            </div>
+                            <span
+                              className={`font-mono text-[10px] font-semibold shrink-0 tabular-nums ${
+                                isInc ? 'text-[#4af626]' : 'text-[#ff4d4d]'
+                              }`}
+                            >
+                              {isInc ? '+' : '-'}
+                              {cleanAmt} {tx.currency}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </section>
 
-          {/* 2. Combat Vitals Card */}
+          {/* 2. Combat Vitals Card (with HP & Condition Aura Feedback) */}
           <section
             id="section-vitals"
-            className={`rounded p-4 flex flex-col gap-3.5 transition-colors ${
+            className={`rounded p-4 flex flex-col gap-3.5 transition-all ${
               isDown
                 ? 'bg-[#171022] border border-[#ff4d4d] glow-crimson'
+                : isCritical
+                ? 'bg-[#171022] border border-[#ff4d4d]/80 shadow-[0_0_14px_rgba(255,77,77,0.16)]'
+                : isConcentrating
+                ? 'surface-resonant border-[#c084fc] shadow-[0_0_16px_rgba(192,132,252,0.18)]'
                 : 'surface-resonant'
             }`}
           >
-            <div className="flex items-center justify-between border-b border-[#581c87]/70 pb-2">
+            <div className="flex items-center justify-between gap-2 border-b border-[#581c87]/70 pb-2">
               <h2 className="font-display text-sm uppercase tracking-[0.08em] text-[#d4e0da] flex items-center gap-2">
                 <Heart
                   className={`w-4 h-4 ${
-                    isDown ? 'text-[#ff4d4d]' : 'text-[#c084fc]'
+                    isDown || isCritical ? 'text-[#ff4d4d]' : 'text-[#c084fc]'
                   }`}
                 />
                 <span>Combat Vitals</span>
               </h2>
-              {isDown && (
-                <span className="font-mono text-[11px] font-bold text-[#ff4d4d] uppercase tracking-wider">
-                  0 HP · Dying
-                </span>
-              )}
+              <div className="flex items-center gap-1.5">
+                {isConcentrating && (
+                  <span className="font-mono text-[10px] font-bold text-[#c084fc] bg-[#a855f7]/20 border border-[#c084fc]/60 rounded px-1.5 py-0.5 uppercase tracking-wider">
+                    Conc.
+                  </span>
+                )}
+                {isDown ? (
+                  <span className="font-mono text-[11px] font-bold text-[#ff4d4d] uppercase tracking-wider">
+                    0 HP · Dying
+                  </span>
+                ) : isCritical ? (
+                  <span className="font-mono text-[10px] font-bold text-[#ff4d4d] bg-[#ff4d4d]/15 border border-[#ff4d4d]/60 rounded px-1.5 py-0.5 uppercase tracking-wider">
+                    Critical ≤25%
+                  </span>
+                ) : null}
+              </div>
             </div>
 
             {/* HP Readout, Max HP, Temp HP & Hit Dice */}
@@ -903,15 +1303,7 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
                   {!readOnly && (
                     <button
                       type="button"
-                      onClick={() =>
-                        onUpdateState((prev) => ({
-                          ...prev,
-                          vitals: {
-                            ...prev.vitals,
-                            hpCurrent: Math.max(0, prev.vitals.hpCurrent - 1),
-                          },
-                        }))
-                      }
+                      onClick={handleStepHpDown}
                       className="w-7 h-7 rounded bg-[#0b100e] border border-[#2e243b] hover:border-[#ff4d4d] text-[#d4e0da] hover:text-[#ff4d4d] flex items-center justify-center cursor-pointer"
                       aria-label="Decrease HP by 1"
                     >
@@ -1087,6 +1479,157 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
               </div>
             )}
 
+            {/* Concentration Check Prompt Banner (auto-appears on damage while Concentrating) */}
+            {!readOnly && concCheck && isConcentrating && (
+              <div className="bg-[#171022] border border-[#c084fc] rounded p-2.5 flex flex-col gap-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-1.5 text-xs text-[#d4e0da]">
+                    <AlertTriangle className="w-4 h-4 text-[#c084fc] shrink-0 mt-0.5" />
+                    <span>
+                      <strong>Concentration Check:</strong> Took{' '}
+                      <span className="font-mono text-[#ff4d4d]">{concCheck.damage}</span>{' '}
+                      dmg → <strong className="font-mono text-[#c084fc]">DC {concCheck.dc} CON Save</strong>
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setConcCheck(null)}
+                    className="text-[#9eb0a7] hover:text-[#d4e0da] cursor-pointer"
+                    aria-label="Dismiss concentration check"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const conSave = getSaveTotal(state, 'CON');
+                      onRollD20(
+                        `Concentration Save (DC ${concCheck.dc})`,
+                        conSave,
+                        rollMode
+                      );
+                      setConcCheck(null);
+                    }}
+                    className="flex-1 py-1 px-2 rounded bg-[#a855f7] hover:bg-[#c084fc] text-[#080c0a] font-mono text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    <Dices className="w-3.5 h-3.5" />
+                    <span>Roll CON Save ({formatSigned(getSaveTotal(state, 'CON'))})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onUpdateState((prev) => ({
+                        ...prev,
+                        vitals: {
+                          ...prev.vitals,
+                          conditions: {
+                            ...prev.vitals.conditions,
+                            concentrating: false,
+                          },
+                        },
+                      }));
+                      setConcCheck(null);
+                    }}
+                    className="py-1 px-2 rounded bg-[#080c0a] border border-[#ff4d4d]/70 text-[#ff4d4d] hover:bg-[#ff4d4d]/15 font-mono text-[11px] cursor-pointer"
+                  >
+                    Drop Conc.
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Turn-by-Turn Action Economy & Reaction Tracker */}
+            <div className="bg-[#080c0a] border border-[#2e243b] rounded p-2.5 flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-mono text-[10px] uppercase tracking-wider text-[#9eb0a7] flex items-center gap-1">
+                  <Zap className="w-3 h-3 text-[#c084fc]" />
+                  <span>Turn Economy</span>
+                </span>
+                {!readOnly && (
+                  <button
+                    type="button"
+                    onClick={handleResetTurn}
+                    className="font-mono text-[10px] text-[#c084fc] hover:underline flex items-center gap-1 cursor-pointer"
+                    title="Reset Action, Bonus, Reaction, and Movement for a new turn"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5" />
+                    <span>New Turn</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5">
+                {(
+                  [
+                    { key: 'actionUsed', label: 'Action' },
+                    { key: 'bonusActionUsed', label: 'Bonus' },
+                    { key: 'reactionUsed', label: 'Reaction' },
+                  ] as const
+                ).map((slot) => {
+                  const used = actionEconomy[slot.key];
+                  return (
+                    <button
+                      key={slot.key}
+                      type="button"
+                      disabled={readOnly}
+                      onClick={() => updateActionEconomy({ [slot.key]: !used })}
+                      className={`py-1 px-1.5 rounded border font-mono text-[10px] transition-colors ${
+                        used
+                          ? 'bg-[#0b100e] border-[#2e243b] text-[#65766e] line-through'
+                          : 'bg-[#171022] border-[#581c87] text-[#d4e0da] hover:border-[#c084fc]'
+                      } ${readOnly ? 'cursor-default' : 'cursor-pointer'}`}
+                      title={used ? `${slot.label} spent — click to restore` : `${slot.label} available — click to spend`}
+                    >
+                      {slot.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex items-center justify-between gap-2 text-[11px] font-mono">
+                <span className="text-[#9eb0a7]">
+                  Move:{' '}
+                  <strong
+                    className={
+                      actionEconomy.movementUsed >= maxSpeedFeet
+                        ? 'text-[#ff4d4d]'
+                        : 'text-[#d4e0da]'
+                    }
+                  >
+                    {actionEconomy.movementUsed} / {maxSpeedFeet} ft
+                  </strong>
+                </span>
+                {!readOnly && (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateActionEconomy({
+                          movementUsed: Math.max(0, actionEconomy.movementUsed - 5),
+                        })
+                      }
+                      className="px-1.5 py-0.5 rounded bg-[#0b100e] border border-[#2e243b] hover:border-[#c084fc] text-[#9eb0a7] hover:text-[#d4e0da] cursor-pointer"
+                    >
+                      -5
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateActionEconomy({
+                          movementUsed: Math.min(maxSpeedFeet * 2, actionEconomy.movementUsed + 5),
+                        })
+                      }
+                      className="px-1.5 py-0.5 rounded bg-[#0b100e] border border-[#2e243b] hover:border-[#c084fc] text-[#9eb0a7] hover:text-[#d4e0da] cursor-pointer"
+                    >
+                      +5ft
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
             {/* Death Saves (3-pip Successes & Failures) */}
             <div className="bg-[#080c0a] border border-[#2e243b] rounded p-2.5 flex items-center justify-between gap-2">
               <span className="font-mono text-[10px] uppercase tracking-wider text-[#9eb0a7]">
@@ -1169,35 +1712,28 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
               </div>
             </div>
 
-            {/* Short & Long Rest Controls */}
+            {/* Guided Short & Long Rest Controls */}
             {!readOnly && (
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={handleSpendHitDie}
-                  disabled={hitDiceRemaining <= 0}
-                  className="h-8 px-2.5 text-xs font-medium rounded border border-[#581c87] text-[#d4e0da] hover:bg-[#581c87]/30 hover:border-[#a855f7] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                  title="Spend 1 Hit Die to recover HP"
+                  onClick={() => setRestModalType('short')}
+                  className="h-8 px-2.5 text-xs font-medium rounded border border-[#581c87] text-[#d4e0da] hover:bg-[#581c87]/30 hover:border-[#a855f7] transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                  title="Open Guided Short Rest (roll Hit Dice & recharge Short Rest features)"
                 >
                   <Sun className="w-3.5 h-3.5 text-[#c084fc]" />
                   <span>Short Rest</span>
                 </button>
                 <button
                   type="button"
-                  onClick={handleLongRest}
+                  onClick={() => setRestModalType('long')}
                   className="h-8 px-2.5 text-xs font-medium rounded border border-[#581c87] text-[#d4e0da] hover:bg-[#581c87]/30 hover:border-[#a855f7] transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                  title="Restore max HP, spell slots, death saves, and half Hit Dice"
+                  title="Open Guided Long Rest checklist"
                 >
                   <Moon className="w-3.5 h-3.5 text-[#c084fc]" />
                   <span>Long Rest</span>
                 </button>
               </div>
-            )}
-
-            {restNotice && (
-              <p className="text-[11px] font-mono text-[#4af626] bg-[#4af626]/8 border border-[#4af626]/40 rounded px-2.5 py-1.5">
-                {restNotice}
-              </p>
             )}
 
             {/* Interactive Condition Toggle Pills */}
@@ -1334,17 +1870,228 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
             </div>
           </section>
 
+          {/* 3. Custom Resource & Feature Charge Trackers (Blank Slate by default) */}
+          <section
+            id="section-features"
+            className="surface-clinical rounded p-4 flex flex-col gap-3"
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-[#2e243b] pb-2">
+              <h2 className="font-display text-sm uppercase tracking-[0.08em] text-[#9eb0a7] flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-[#a855f7]" />
+                <span>Features &amp; Limited Uses</span>
+              </h2>
+              {!readOnly && (
+                <button
+                  type="button"
+                  onClick={() => setShowAddFeature((prev) => !prev)}
+                  className="px-2 py-0.5 text-[11px] font-mono rounded bg-[#080c0a] border border-[#581c87] hover:border-[#c084fc] text-[#c084fc] flex items-center gap-1 cursor-pointer"
+                >
+                  <Plus className="w-3 h-3" />
+                  <span>Track</span>
+                </button>
+              )}
+            </div>
+
+            {showAddFeature && !readOnly && (
+              <form
+                onSubmit={handleAddFeature}
+                className="bg-[#080c0a] border border-[#581c87] rounded p-2.5 flex flex-col gap-2"
+              >
+                <input
+                  type="text"
+                  value={newFeatureName}
+                  onChange={(e) => setNewFeatureName(e.target.value)}
+                  placeholder="Feature name (e.g. Channel Divinity, Ki Points)..."
+                  className="ledger-input px-2 py-1 text-xs"
+                  autoFocus
+                />
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-1 text-[11px] font-mono text-[#9eb0a7]">
+                    <span>Uses</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={newFeatureMax}
+                      onChange={(e) =>
+                        setNewFeatureMax(
+                          Math.max(1, Math.min(20, parseInt(e.target.value, 10) || 1))
+                        )
+                      }
+                      className="ledger-input w-12 px-1.5 py-0.5 text-xs text-center tabular-nums"
+                    />
+                  </label>
+                  <select
+                    value={newFeatureRecharge}
+                    onChange={(e) =>
+                      setNewFeatureRecharge(e.target.value as RechargeRule)
+                    }
+                    aria-label="Recharge timing"
+                    className="ledger-input flex-1 px-2 py-0.5 text-xs font-mono"
+                  >
+                    <option value="short">Short Rest</option>
+                    <option value="long">Long Rest</option>
+                    <option value="manual">Manual</option>
+                  </select>
+                </div>
+                <input
+                  type="text"
+                  value={newFeatureNotes}
+                  onChange={(e) => setNewFeatureNotes(e.target.value)}
+                  placeholder="Optional brief effect note..."
+                  className="ledger-input px-2 py-1 text-[11px]"
+                />
+                <div className="flex items-center justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setShowAddFeature(false)}
+                    className="px-2 py-1 text-xs text-[#9eb0a7] hover:text-[#d4e0da] cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-2.5 py-1 rounded bg-[#a855f7] hover:bg-[#c084fc] text-[#080c0a] text-xs font-semibold cursor-pointer"
+                  >
+                    Add Tracker
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {features.length === 0 ? (
+              <p className="text-xs text-[#65766e]">
+                No limited-use features tracked yet.
+                {!readOnly && (
+                  <>
+                    {' '}
+                    Click <span className="font-mono text-[#c084fc]">+ Track</span> to add
+                    class charges or racial abilities.
+                  </>
+                )}
+              </p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {features.map((feat) => {
+                  const remaining = Math.max(0, feat.max - feat.used);
+                  return (
+                    <div
+                      key={feat.id}
+                      className="bg-[#080c0a] border border-[#2e243b] rounded p-2.5 flex flex-col gap-1.5"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex items-center gap-1.5">
+                          <span className="text-xs font-medium text-[#d4e0da] truncate">
+                            {feat.name}
+                          </span>
+                          <span
+                            className={`font-mono text-[9px] uppercase px-1.5 py-0.5 rounded border shrink-0 ${
+                              feat.recharge === 'short'
+                                ? 'border-[#4af626]/50 text-[#4af626] bg-[#4af626]/10'
+                                : feat.recharge === 'long'
+                                ? 'border-[#a855f7]/60 text-[#c084fc] bg-[#171022]'
+                                : 'border-[#2e243b] text-[#9eb0a7]'
+                            }`}
+                          >
+                            {feat.recharge === 'short'
+                              ? 'Short'
+                              : feat.recharge === 'long'
+                              ? 'Long'
+                              : 'Manual'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="font-mono text-[11px] text-[#9eb0a7] tabular-nums">
+                            {remaining}/{feat.max}
+                          </span>
+                          {!readOnly && feat.used > 0 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onUpdateState((prev) => ({
+                                  ...prev,
+                                  features: (prev.features ?? []).map((f) =>
+                                    f.id === feat.id ? { ...f, used: 0 } : f
+                                  ),
+                                }))
+                              }
+                              title={`Recharge ${feat.name}`}
+                              className="p-0.5 text-[#9eb0a7] hover:text-[#4af626] cursor-pointer"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                            </button>
+                          )}
+                          {!readOnly && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onUpdateState((prev) => ({
+                                  ...prev,
+                                  features: (prev.features ?? []).filter(
+                                    (f) => f.id !== feat.id
+                                  ),
+                                }))
+                              }
+                              title={`Remove ${feat.name}`}
+                              className="p-0.5 text-[#65766e] hover:text-[#ff4d4d] cursor-pointer"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {Array.from({ length: feat.max }, (_, idx) => {
+                          const pipNum = idx + 1;
+                          const spent = feat.used >= pipNum;
+                          return (
+                            <button
+                              key={pipNum}
+                              type="button"
+                              disabled={readOnly}
+                              onClick={() => handleToggleFeaturePip(feat.id, pipNum)}
+                              aria-label={`${feat.name} charge ${pipNum} ${spent ? 'spent' : 'available'}`}
+                              className={`w-4 h-4 rounded-xs border transition-colors ${
+                                spent
+                                  ? 'bg-[#0b100e] border-[#2e243b]'
+                                  : 'bg-[#a855f7] border-[#c084fc]'
+                              } ${readOnly ? 'cursor-default' : 'cursor-pointer hover:border-[#c084fc]'}`}
+                            />
+                          );
+                        })}
+                      </div>
+
+                      {feat.notes && (
+                        <p className="text-[11px] text-[#9eb0a7] leading-snug">
+                          {feat.notes}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
           {/* Covert Arc Panel (Strictly Player/DM View ONLY) */}
           {!readOnly && (
-            <section
+            <MovableResizableBox
               id="section-covert"
-              className={`rounded p-4 transition-colors ${
+              label="Covert Arc Telemetry"
+              layout={state.textBoxLayout?.['core-covert-arc']}
+              editMode={isEditing}
+              readOnly={readOnly}
+              onChangeLayout={(next) => handleUpdateBoxLayout('core-covert-arc', next)}
+              minWidth={260}
+              minHeight={160}
+              className={`rounded p-4 flex flex-col transition-colors ${
                 covertUnlocked
                   ? 'surface-resonant border-[#c084fc]'
                   : 'surface-clinical'
               }`}
             >
-              <div className="flex items-center justify-between gap-2 border-b border-[#2e243b] pb-2">
+              <div className="flex items-center justify-between gap-2 border-b border-[#2e243b] pb-2 shrink-0">
                 <h2 className="font-display text-sm uppercase tracking-[0.08em] text-[#c084fc] flex items-center gap-1.5">
                   {covertUnlocked ? (
                     <Unlock className="w-3.5 h-3.5" />
@@ -1366,9 +2113,9 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
                   header to unlock.
                 </p>
               ) : (
-                <div className="mt-3 flex flex-col gap-3">
+                <div className="mt-3 flex-1 min-h-0 flex flex-col gap-3 overflow-y-auto">
                   {state.covert.clockworkVesselActive && (
-                    <div>
+                    <div className="flex-1 flex flex-col min-h-[96px]">
                       <label className="block font-mono text-[10px] uppercase tracking-wider text-[#c084fc] mb-1">
                         Alternate Arc — Clockwork / Construct Vessel
                       </label>
@@ -1385,12 +2132,12 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
                           }))
                         }
                         placeholder="Record private notes for Clockwork / Construct Vessel contingency..."
-                        className="ledger-input w-full p-2 text-xs leading-relaxed resize-y"
+                        className="ledger-input flex-1 w-full p-2 text-xs leading-relaxed resize-y"
                       />
                     </div>
                   )}
 
-                  <div>
+                  <div className="flex-1 flex flex-col min-h-[96px]">
                     <label className="block font-mono text-[10px] uppercase tracking-wider text-[#9eb0a7] mb-1">
                       Covert Arc — Lichdom / Undying Drift
                     </label>
@@ -1407,12 +2154,12 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
                         }))
                       }
                       placeholder="Record private notes for Undying Drift contingencies..."
-                      className="ledger-input w-full p-2 text-xs leading-relaxed resize-y"
+                      className="ledger-input flex-1 w-full p-2 text-xs leading-relaxed resize-y"
                     />
                   </div>
                 </div>
               )}
-            </section>
+            </MovableResizableBox>
           )}
         </div>
 
@@ -1819,13 +2566,20 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
           </div>
 
           {/* 5. Personality & Flaws + Clinical & Roleplay Notes */}
-          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-            {/* Personality & Flaws Card */}
-            <section
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
+            {/* Personality & Flaws Card (One entry per line + Add more under each) */}
+            <MovableResizableBox
               id="section-persona"
+              label="Personality & Flaws"
+              layout={state.textBoxLayout?.['core-persona']}
+              editMode={isEditing}
+              readOnly={readOnly}
+              onChangeLayout={(next) => handleUpdateBoxLayout('core-persona', next)}
+              minWidth={260}
+              minHeight={240}
               className="xl:col-span-6 surface-clinical rounded p-4 flex flex-col gap-3"
             >
-              <div className="flex items-center justify-between border-b border-[#2e243b] pb-2">
+              <div className="flex items-center justify-between border-b border-[#2e243b] pb-2 shrink-0">
                 <h2 className="font-display text-sm uppercase tracking-[0.08em] text-[#9eb0a7]">
                   Personality &amp; Flaws
                 </h2>
@@ -1840,66 +2594,66 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
                 )}
               </div>
 
-              <div className="flex flex-col gap-2.5">
+              <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-3 pr-0.5">
                 {(
                   [
                     {
                       key: 'traits',
                       label: 'Traits',
-                      placeholder: 'Verified character traits...',
+                      placeholder: 'Enter one character trait...',
                     },
                     {
                       key: 'ideals',
                       label: 'Ideals',
-                      placeholder: 'Enter verified ideals...',
+                      placeholder: 'Enter one ideal...',
                     },
                     {
                       key: 'bonds',
                       label: 'Bonds',
-                      placeholder: 'Enter verified bonds...',
+                      placeholder: 'Enter one bond...',
                     },
                     {
                       key: 'flaws',
                       label: 'Flaws',
-                      placeholder: 'Enter verified flaws...',
+                      placeholder: 'Enter one flaw...',
                     },
                   ] as const
                 ).map((field) => (
-                  <div key={field.key}>
-                    <label className="block font-mono text-[10px] uppercase tracking-wider text-[#9eb0a7] mb-1">
-                      {field.label}
-                    </label>
-                    {!isEditing ? (
-                      <div className="bg-[#080c0a] border border-[#2e243b] rounded p-2 text-xs text-[#d4e0da] min-h-[42px] whitespace-pre-wrap leading-relaxed">
-                        {state.persona[field.key].trim() || (
-                          <span className="text-[#65766e] italic">Unrecorded</span>
-                        )}
-                      </div>
-                    ) : (
-                      <textarea
-                        rows={2}
-                        value={state.persona[field.key]}
-                        onChange={(e) =>
-                          onUpdateState((prev) => ({
-                            ...prev,
-                            persona: {
-                              ...prev.persona,
-                              [field.key]: e.target.value,
-                            },
-                          }))
-                        }
-                        placeholder={field.placeholder}
-                        className="ledger-input w-full p-2 text-xs leading-relaxed resize-y"
-                      />
-                    )}
-                  </div>
+                  <PersonaLineList
+                    key={field.key}
+                    label={field.label}
+                    value={state.persona[field.key]}
+                    placeholder={field.placeholder}
+                    isEditing={isEditing}
+                    readOnly={readOnly}
+                    onChange={(nextValue) =>
+                      onUpdateState((prev) => ({
+                        ...prev,
+                        persona: {
+                          ...prev.persona,
+                          [field.key]: nextValue,
+                        },
+                      }))
+                    }
+                  />
                 ))}
               </div>
-            </section>
+            </MovableResizableBox>
 
             {/* Clinical & Roleplay Notes Card (Always directly editable in Player/DM View) */}
-            <section className="xl:col-span-6 surface-clinical rounded p-4 flex flex-col gap-3">
-              <div className="flex items-center justify-between border-b border-[#2e243b] pb-2">
+            <MovableResizableBox
+              label="Clinical & Roleplay Notes"
+              layout={state.textBoxLayout?.['core-clinical-notes']}
+              editMode={isEditing}
+              readOnly={readOnly}
+              onChangeLayout={(next) =>
+                handleUpdateBoxLayout('core-clinical-notes', next)
+              }
+              minWidth={260}
+              minHeight={220}
+              className="xl:col-span-6 surface-clinical rounded p-4 flex flex-col gap-3"
+            >
+              <div className="flex items-center justify-between border-b border-[#2e243b] pb-2 shrink-0">
                 <h2 className="font-display text-sm uppercase tracking-[0.08em] text-[#9eb0a7]">
                   Clinical &amp; Roleplay Notes
                 </h2>
@@ -1916,7 +2670,7 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
               </div>
 
               {readOnly ? (
-                <div className="flex-1 bg-[#080c0a] border border-[#2e243b] rounded p-3 text-xs text-[#d4e0da] min-h-[210px] whitespace-pre-wrap leading-relaxed">
+                <div className="flex-1 min-h-[210px] overflow-y-auto bg-[#080c0a] border border-[#2e243b] rounded p-3 text-xs text-[#d4e0da] whitespace-pre-wrap leading-relaxed">
                   {state.persona.clinicalNotes.trim() || (
                     <span className="text-[#65766e] italic">
                       No clinical notes recorded yet.
@@ -1939,10 +2693,21 @@ export const CoreSheetScreen: React.FC<CoreSheetScreenProps> = ({
                   className="ledger-input flex-1 w-full p-2.5 text-xs leading-relaxed resize-y min-h-[220px]"
                 />
               )}
-            </section>
+            </MovableResizableBox>
           </div>
         </div>
       </div>
+
+      {/* Guided Short & Long Rest Workflow Modal */}
+      {restModalType && !readOnly && (
+        <RestWorkflowModal
+          initialType={restModalType}
+          state={state}
+          onClose={() => setRestModalType(null)}
+          onUpdateState={onUpdateState}
+          onRollExpression={onRollExpression}
+        />
+      )}
     </div>
   );
 };

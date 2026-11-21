@@ -16,12 +16,15 @@ import {
 import {
   ABILITY_KEYS,
   ABILITY_LABELS,
+  AVATAR_RACE_OPTIONS,
   createInitialLedgerState,
   STANDARD_5E_SKILLS,
 } from '../data/defaultState';
 import {
   AbilityKey,
   ActiveScreen,
+  AvatarGender,
+  AvatarRace,
   LedgerState,
   ProficiencyRank,
   RollMode,
@@ -106,6 +109,20 @@ export const GlobalSearchModal: React.FC<GlobalSearchModalProps> = ({
           category: 'Skills',
           title: `${s.name} (${s.ability})`,
           snippet: s.specialty || `Rank: ${s.rank.toUpperCase()}`,
+        });
+      }
+    });
+
+    // Features & Limited Uses
+    (state.features ?? []).forEach((f) => {
+      if (`${f.name} ${f.notes} ${f.recharge}`.toLowerCase().includes(q)) {
+        hits.push({
+          id: `hit-feat-${f.id}`,
+          screen: 'core',
+          sectionId: 'section-features',
+          category: 'Features',
+          title: `${f.name} (${Math.max(0, f.max - f.used)}/${f.max})`,
+          snippet: f.notes || `Recharges on ${f.recharge} rest`,
         });
       }
     });
@@ -211,6 +228,29 @@ export const GlobalSearchModal: React.FC<GlobalSearchModalProps> = ({
           category: 'Gear',
           title: g.name,
           snippet: g.notes || g.category,
+        });
+      }
+    });
+
+    state.gearAndNotes.sessionCosts.forEach((tx) => {
+      if (
+        `${tx.description} ${tx.notes ?? ''} ${tx.amount} ${tx.currency} ${tx.date ?? ''}`
+          .toLowerCase()
+          .includes(q)
+      ) {
+        const isIncome =
+          tx.type === 'income' ||
+          (!tx.type && tx.amount.trim().startsWith('+'));
+        const cleanAmt = tx.amount.trim().replace(/^[+-]/, '');
+        hits.push({
+          id: `hit-tx-${tx.id}`,
+          screen: 'gear',
+          sectionId: 'section-currency',
+          category: isIncome ? 'Currency · Income' : 'Currency · Expense',
+          title: `${isIncome ? '+' : '-'}${cleanAmt} ${tx.currency} — ${tx.description}`,
+          snippet: [tx.date || tx.timestamp.slice(1, 11), tx.notes]
+            .filter(Boolean)
+            .join(' · '),
         });
       }
     });
@@ -361,6 +401,7 @@ interface FullEditorModalProps {
   onUpdateState: (updater: (prev: LedgerState) => LedgerState) => void;
   onReplaceState: (next: LedgerState) => void;
   onNewBlankCharacter: () => void;
+  onOpenNewCharacterModal?: () => void;
 }
 
 export const FullEditorModal: React.FC<FullEditorModalProps> = ({
@@ -371,6 +412,7 @@ export const FullEditorModal: React.FC<FullEditorModalProps> = ({
   onUpdateState,
   onReplaceState,
   onNewBlankCharacter,
+  onOpenNewCharacterModal,
 }) => {
   const [tab, setTab] = useState<EditorTab>(initialTab);
   const [importStatus, setImportStatus] = useState<{
@@ -815,6 +857,54 @@ export const FullEditorModal: React.FC<FullEditorModalProps> = ({
                     />
                   </div>
                 ))}
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <div>
+                    <label className="block font-mono text-[10px] uppercase text-[#9eb0a7] mb-1">
+                      Portrait Sprite Race
+                    </label>
+                    <select
+                      value={state.identity.avatarRace}
+                      onChange={(e) =>
+                        onUpdateState((prev) => ({
+                          ...prev,
+                          identity: {
+                            ...prev.identity,
+                            avatarRace: e.target.value as AvatarRace,
+                          },
+                        }))
+                      }
+                      className="ledger-input w-full px-2 py-1.5 text-xs font-mono"
+                    >
+                      {AVATAR_RACE_OPTIONS.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block font-mono text-[10px] uppercase text-[#9eb0a7] mb-1">
+                      Sprite Variant
+                    </label>
+                    <select
+                      value={state.identity.avatarGender}
+                      onChange={(e) =>
+                        onUpdateState((prev) => ({
+                          ...prev,
+                          identity: {
+                            ...prev.identity,
+                            avatarGender: e.target.value as AvatarGender,
+                          },
+                        }))
+                      }
+                      className="ledger-input w-full px-2 py-1.5 text-xs font-mono"
+                    >
+                      <option value="male">Male</option>
+                      <option value="female">Female</option>
+                    </select>
+                  </div>
+                </div>
               </div>
 
               <div className="flex flex-col gap-2.5">
@@ -1318,7 +1408,20 @@ export const FullEditorModal: React.FC<FullEditorModalProps> = ({
                   build any character from scratch.
                 </p>
                 {!confirmNewBlank ? (
-                  <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {onOpenNewCharacterModal && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onClose();
+                          onOpenNewCharacterModal();
+                        }}
+                        className="px-3 py-1.5 rounded bg-[#a855f7] hover:bg-[#c084fc] text-[#080c0a] text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+                      >
+                        <UserPlus className="w-3.5 h-3.5" />
+                        <span>Add New Character to Roster</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => {
@@ -1328,7 +1431,7 @@ export const FullEditorModal: React.FC<FullEditorModalProps> = ({
                       className="px-3 py-1.5 rounded bg-[#171022] border border-[#a855f7] text-[#c084fc] hover:bg-[#a855f7] hover:text-[#080c0a] text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
                     >
                       <UserPlus className="w-3.5 h-3.5" />
-                      <span>New Blank Character</span>
+                      <span>Reset Current Slot to Blank</span>
                     </button>
                   </div>
                 ) : (

@@ -1,5 +1,6 @@
 import {
   ABILITY_KEYS,
+  AVATAR_RACE_OPTIONS,
   createBlankCharacterState,
   createInitialLedgerState,
   DEFAULT_MINIATURE_SUPPLIES,
@@ -8,28 +9,42 @@ import {
 import {
   AbilityKey,
   AttackEntry,
+  AvatarGender,
+  AvatarRace,
   CampaignLogEntry,
+  CharacterRoster,
+  CharacterSlot,
+  CurrencyDenom,
   CustomCondition,
   CustomLedgerSection,
   DiceMacro,
+  FeatureResource,
   GearItem,
   LedgerState,
   ProficiencyRank,
+  RechargeRule,
   RollMode,
   RollRecord,
   SessionCostLine,
   SkillEntry,
   SpellEntry,
   SupplyCounter,
+  TextBoxLayoutItem,
+  UiDensity,
 } from '../types/ledger';
-import { redactStateForParty } from './ledgerMath';
+import { createId, redactStateForParty } from './ledgerMath';
 
 const STATE_STORAGE_KEY = 'clinical_ledger_pip_state_v1';
 const ROLL_HISTORY_KEY = 'clinical_ledger_pip_rolls_v1';
+const ROSTER_STORAGE_KEY = 'clinical_ledger_roster_v1';
+const DENSITY_STORAGE_KEY = 'clinical_ledger_density_v1';
 
 const VALID_ABILITIES = new Set<string>(ABILITY_KEYS);
 const VALID_RANKS = new Set<string>(['none', 'half', 'prof', 'exp']);
 const VALID_ROLL_MODES = new Set<string>(['normal', 'adv', 'dis']);
+const VALID_AVATAR_RACES = new Set<string>(AVATAR_RACE_OPTIONS.map((r) => r.id));
+const VALID_CURRENCIES = new Set<string>(['PP', 'GP', 'EP', 'SP', 'CP']);
+const VALID_RECHARGE_RULES = new Set<string>(['short', 'long', 'manual']);
 
 export function slugifyCharacterName(name: string): string {
   const cleaned = name
@@ -135,6 +150,152 @@ export function saveRollHistory(rolls: RollRecord[]): void {
         ROLL_HISTORY_KEY,
         JSON.stringify(rolls.slice(0, MAX_ROLL_HISTORY))
       );
+    }
+  } catch {
+    // Ignore quota errors
+  }
+}
+
+export function loadUiDensity(): UiDensity {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return 'cozy';
+    const raw = localStorage.getItem(DENSITY_STORAGE_KEY);
+    return raw === 'compact' ? 'compact' : 'cozy';
+  } catch {
+    return 'cozy';
+  }
+}
+
+export function saveUiDensity(density: UiDensity): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      localStorage.setItem(DENSITY_STORAGE_KEY, density);
+    }
+  } catch {
+    // Ignore quota errors
+  }
+}
+
+function normalizeRollList(rawList: unknown): RollRecord[] {
+  if (!Array.isArray(rawList)) return [];
+  const validRolls: RollRecord[] = [];
+  for (const item of rawList) {
+    if (
+      item &&
+      typeof item === 'object' &&
+      typeof item.id === 'string' &&
+      item.id.trim() &&
+      typeof item.expression === 'string' &&
+      typeof item.total === 'number' &&
+      Number.isFinite(item.total) &&
+      Array.isArray(item.rolls)
+    ) {
+      const mode: RollMode =
+        typeof item.mode === 'string' && VALID_ROLL_MODES.has(item.mode)
+          ? (item.mode as RollMode)
+          : 'normal';
+      validRolls.push({
+        id: item.id.trim(),
+        timestamp: typeof item.timestamp === 'string' ? item.timestamp : '',
+        label: typeof item.label === 'string' ? item.label : item.expression,
+        expression: item.expression,
+        rolls: item.rolls.filter(
+          (r: unknown): r is number => typeof r === 'number' && Number.isFinite(r)
+        ),
+        modifier:
+          typeof item.modifier === 'number' && Number.isFinite(item.modifier)
+            ? item.modifier
+            : 0,
+        total: Math.round(item.total),
+        isNat20: Boolean(item.isNat20),
+        isNat1: Boolean(item.isNat1),
+        mode,
+        keptIndices: Array.isArray(item.keptIndices)
+          ? item.keptIndices.filter(
+              (idx: unknown): idx is number =>
+                typeof idx === 'number' && Number.isFinite(idx)
+            )
+          : undefined,
+      });
+    }
+  }
+  return validRolls.slice(0, MAX_ROLL_HISTORY);
+}
+
+export function loadCharacterRoster(): CharacterRoster {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = localStorage.getItem(ROSTER_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { activeId?: unknown; slots?: unknown[] };
+        if (parsed && Array.isArray(parsed.slots) && parsed.slots.length > 0) {
+          const normalizedSlots: CharacterSlot[] = parsed.slots
+            .filter(
+              (s): s is Partial<CharacterSlot> =>
+                Boolean(
+                  s &&
+                    typeof s === 'object' &&
+                    'state' in s &&
+                    (s as Partial<CharacterSlot>).state &&
+                    typeof (s as Partial<CharacterSlot>).state === 'object'
+                )
+            )
+            .map((s) => ({
+              id: typeof s.id === 'string' && s.id.trim() ? s.id.trim() : createId('char'),
+              state: mergeWithDefaults(
+                s.state as Partial<LedgerState>,
+                createBlankCharacterState()
+              ),
+              rollHistory: normalizeRollList(s.rollHistory),
+              updatedAt:
+                typeof s.updatedAt === 'string'
+                  ? s.updatedAt
+                  : new Date().toISOString(),
+            }));
+
+          if (normalizedSlots.length > 0) {
+            const activeExists = normalizedSlots.some((s) => s.id === parsed.activeId);
+            return {
+              activeId: activeExists
+                ? (parsed.activeId as string)
+                : normalizedSlots[0].id,
+              slots: normalizedSlots,
+            };
+          }
+        }
+      }
+    }
+  } catch {
+    // Fall back to legacy migration below
+  }
+
+  // Migrate existing single-character localStorage state seamlessly into slot 1
+  const initialState = loadLedgerState();
+  const initialRolls = loadRollHistory();
+  const firstId = 'char-primary';
+  return {
+    activeId: firstId,
+    slots: [
+      {
+        id: firstId,
+        state: initialState,
+        rollHistory: initialRolls,
+        updatedAt: new Date().toISOString(),
+      },
+    ],
+  };
+}
+
+export function saveCharacterRoster(roster: CharacterRoster): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      localStorage.setItem(ROSTER_STORAGE_KEY, JSON.stringify(roster));
+      const active =
+        roster.slots.find((s) => s.id === roster.activeId) ?? roster.slots[0];
+      if (active) {
+        saveLedgerState(active.state);
+        saveRollHistory(active.rollHistory);
+      }
     }
   } catch {
     // Ignore quota errors
@@ -327,22 +488,81 @@ function normalizeSessionCosts(incoming: unknown): SessionCostLine[] {
   return incoming
     .filter((c): c is Partial<SessionCostLine> => Boolean(c && typeof c === 'object'))
     .map((c, idx) => {
-      const currency =
-        c.currency === 'SP' || c.currency === 'CP' ? c.currency : 'GP';
+      const currency: CurrencyDenom =
+        typeof c.currency === 'string' && VALID_CURRENCIES.has(c.currency)
+          ? (c.currency as CurrencyDenom)
+          : 'GP';
+      const rawAmount =
+        typeof c.amount === 'string'
+          ? c.amount
+          : typeof c.amount === 'number'
+          ? String(c.amount)
+          : '0';
+      const rawTimestamp = typeof c.timestamp === 'string' ? c.timestamp : '';
+      const inferredType =
+        c.type === 'income' || c.type === 'expense'
+          ? c.type
+          : rawAmount.trim().startsWith('+')
+          ? 'income'
+          : 'expense';
+      const dateMatch = rawTimestamp.match(/\d{4}-\d{2}-\d{2}/);
+      const normalizedDate =
+        typeof c.date === 'string' && c.date.trim()
+          ? c.date.trim()
+          : dateMatch
+          ? dateMatch[0]
+          : '';
       return {
         id: typeof c.id === 'string' && c.id.trim() ? c.id.trim() : `cost-${idx + 1}`,
         description:
-          typeof c.description === 'string' ? c.description : 'Expended resource',
-        amount:
-          typeof c.amount === 'string'
-            ? c.amount
-            : typeof c.amount === 'number'
-            ? String(c.amount)
-            : '0',
+          typeof c.description === 'string' ? c.description : 'Transaction',
+        notes: typeof c.notes === 'string' ? c.notes : '',
+        amount: rawAmount,
         currency,
-        timestamp: typeof c.timestamp === 'string' ? c.timestamp : '',
+        type: inferredType,
+        date: normalizedDate,
+        timestamp: rawTimestamp,
       };
     });
+}
+
+function normalizeFeatures(incoming: unknown): FeatureResource[] {
+  if (!Array.isArray(incoming)) return [];
+  return incoming
+    .filter((f): f is Partial<FeatureResource> => Boolean(f && typeof f === 'object'))
+    .map((f, idx) => {
+      const max = Math.max(1, Math.min(30, Math.round(coerceNumber(f.max, 1))));
+      const used = Math.max(0, Math.min(max, Math.round(coerceNumber(f.used, 0))));
+      const recharge: RechargeRule =
+        typeof f.recharge === 'string' && VALID_RECHARGE_RULES.has(f.recharge)
+          ? (f.recharge as RechargeRule)
+          : 'long';
+      return {
+        id: typeof f.id === 'string' && f.id.trim() ? f.id.trim() : `feat-${idx + 1}`,
+        name: typeof f.name === 'string' && f.name.trim() ? f.name : `Feature ${idx + 1}`,
+        max,
+        used,
+        recharge,
+        notes: typeof f.notes === 'string' ? f.notes : '',
+      };
+    });
+}
+
+function inferAvatarRaceFromText(raceText: string, fallback: AvatarRace): AvatarRace {
+  const lower = raceText.toLowerCase();
+  if (lower.includes('gnome')) return 'gnome';
+  if (lower.includes('half-elf') || lower.includes('half elf')) return 'half-elf';
+  if (lower.includes('half-orc') || lower.includes('half orc') || lower.includes('orc')) return 'half-orc';
+  if (lower.includes('elf')) return 'elf';
+  if (lower.includes('dwarf')) return 'dwarf';
+  if (lower.includes('halfling')) return 'halfling';
+  if (lower.includes('dragonborn')) return 'dragonborn';
+  if (lower.includes('tiefling')) return 'tiefling';
+  if (lower.includes('tabaxi')) return 'tabaxi';
+  if (lower.includes('warforged') || lower.includes('construct')) return 'warforged';
+  if (lower.includes('aasimar')) return 'aasimar';
+  if (lower.includes('human')) return 'human';
+  return fallback;
 }
 
 function normalizeCampaignLog(incoming: unknown): CampaignLogEntry[] {
@@ -373,6 +593,43 @@ function normalizeExtraConditions(incoming: unknown): CustomCondition[] {
       name: typeof c.name === 'string' && c.name.trim() ? c.name : `Condition ${idx + 1}`,
       description: typeof c.description === 'string' ? c.description : '',
     }));
+}
+
+function normalizeTextBoxLayout(
+  incoming: unknown
+): Record<string, TextBoxLayoutItem> {
+  if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+    return {};
+  }
+  const result: Record<string, TextBoxLayoutItem> = {};
+  for (const [key, value] of Object.entries(incoming as Record<string, unknown>)) {
+    if (!key.trim() || !value || typeof value !== 'object' || Array.isArray(value)) {
+      continue;
+    }
+    const raw = value as Record<string, unknown>;
+    const item: TextBoxLayoutItem = {};
+    if (typeof raw.x === 'number' && Number.isFinite(raw.x)) {
+      item.x = Math.max(-1200, Math.min(1200, Math.round(raw.x)));
+    }
+    if (typeof raw.y === 'number' && Number.isFinite(raw.y)) {
+      item.y = Math.max(-1200, Math.min(1200, Math.round(raw.y)));
+    }
+    if (typeof raw.width === 'number' && Number.isFinite(raw.width)) {
+      item.width = Math.max(220, Math.min(1400, Math.round(raw.width)));
+    }
+    if (typeof raw.height === 'number' && Number.isFinite(raw.height)) {
+      item.height = Math.max(140, Math.min(1200, Math.round(raw.height)));
+    }
+    if (
+      item.x !== undefined ||
+      item.y !== undefined ||
+      item.width !== undefined ||
+      item.height !== undefined
+    ) {
+      result[key] = item;
+    }
+  }
+  return result;
 }
 
 export function mergeWithDefaults(
@@ -503,6 +760,21 @@ export function mergeWithDefaults(
         typeof incoming.identity?.portraitVessel === 'string'
           ? incoming.identity.portraitVessel
           : null,
+      avatarRace:
+        typeof incoming.identity?.avatarRace === 'string' &&
+        VALID_AVATAR_RACES.has(incoming.identity.avatarRace)
+          ? (incoming.identity.avatarRace as AvatarRace)
+          : inferAvatarRaceFromText(
+              typeof incoming.identity?.race === 'string'
+                ? incoming.identity.race
+                : defaults.identity.race,
+              defaults.identity.avatarRace ?? 'human'
+            ),
+      avatarGender:
+        incoming.identity?.avatarGender === 'female' ||
+        incoming.identity?.avatarGender === 'male'
+          ? (incoming.identity.avatarGender as AvatarGender)
+          : defaults.identity.avatarGender ?? 'male',
     },
     abilities: mergedAbilities,
     saveProficiencies: mergedSaveProfs,
@@ -564,7 +836,17 @@ export function mergeWithDefaults(
         ),
         extra: normalizeExtraConditions(incoming.vitals?.conditions?.extra),
       },
+      actionEconomy: {
+        actionUsed: Boolean(incoming.vitals?.actionEconomy?.actionUsed),
+        bonusActionUsed: Boolean(incoming.vitals?.actionEconomy?.bonusActionUsed),
+        reactionUsed: Boolean(incoming.vitals?.actionEconomy?.reactionUsed),
+        movementUsed: Math.max(
+          0,
+          Math.round(coerceNumber(incoming.vitals?.actionEconomy?.movementUsed, 0))
+        ),
+      },
     },
+    features: normalizeFeatures(incoming.features),
     persona: {
       traits:
         typeof incoming.persona?.traits === 'string'
@@ -613,7 +895,9 @@ export function mergeWithDefaults(
               defaults.gearAndNotes.miniatureSupplies
             ),
       currency: {
+        pp: Math.max(0, Math.round(coerceNumber(incoming.gearAndNotes?.currency?.pp, 0))),
         gp: Math.max(0, Math.round(coerceNumber(incoming.gearAndNotes?.currency?.gp, 0))),
+        ep: Math.max(0, Math.round(coerceNumber(incoming.gearAndNotes?.currency?.ep, 0))),
         sp: Math.max(0, Math.round(coerceNumber(incoming.gearAndNotes?.currency?.sp, 0))),
         cp: Math.max(0, Math.round(coerceNumber(incoming.gearAndNotes?.currency?.cp, 0))),
       },
@@ -630,6 +914,7 @@ export function mergeWithDefaults(
       defaults.customLedger
     ),
     customMacros: normalizeMacros(incoming.customMacros, isLegacyPipV2),
+    textBoxLayout: normalizeTextBoxLayout(incoming.textBoxLayout),
   };
 }
 

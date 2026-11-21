@@ -1,17 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Check,
   ChevronDown,
   Clock,
   EyeOff,
   FileText,
   Lock,
+  Move,
   RotateCcw,
   Search,
   Unlock,
   X,
 } from 'lucide-react';
-import { LedgerState } from '../types/ledger';
+import { LedgerState, TextBoxLayoutItem } from '../types/ledger';
 import { formatTimestamp } from '../utils/ledgerMath';
+import { MovableResizableBox } from './MovableResizableBox';
 
 interface CustomLedgerScreenProps {
   state: LedgerState;
@@ -176,6 +179,50 @@ export const CustomLedgerScreen: React.FC<CustomLedgerScreenProps> = ({
 
   // Quick panel search / filter
   const [panelSearch, setPanelSearch] = useState('');
+  // Edit Layout mode for moving & resizing custom ledger boxes
+  const [layoutEditMode, setLayoutEditMode] = useState(false);
+  const isLayoutEditing = !readOnly && layoutEditMode;
+
+  const hasCustomPanelLayout = state.customLedger.some((sec) => {
+    const item = state.textBoxLayout?.[`custom-${sec.id}`];
+    return Boolean(
+      item &&
+        (item.x || item.y || item.width !== undefined || item.height !== undefined)
+    );
+  });
+
+  const handleUpdatePanelLayout = (
+    boxId: string,
+    next: TextBoxLayoutItem | null
+  ) => {
+    if (readOnly) return;
+    onUpdateState((prev) => {
+      const current = { ...(prev.textBoxLayout ?? {}) };
+      if (!next) {
+        delete current[boxId];
+      } else {
+        current[boxId] = next;
+      }
+      return {
+        ...prev,
+        textBoxLayout: current,
+      };
+    });
+  };
+
+  const handleResetCustomLayouts = () => {
+    if (readOnly) return;
+    onUpdateState((prev) => {
+      const current = { ...(prev.textBoxLayout ?? {}) };
+      prev.customLedger.forEach((sec) => {
+        delete current[`custom-${sec.id}`];
+      });
+      return {
+        ...prev,
+        textBoxLayout: current,
+      };
+    });
+  };
 
   // Undo / Revert snapshot for accidental preset replacements
   const [undoSnapshot, setUndoSnapshot] = useState<{
@@ -399,6 +446,45 @@ export const CustomLedgerScreen: React.FC<CustomLedgerScreenProps> = ({
             )}
           </div>
 
+          {!readOnly && (
+            <>
+              {isLayoutEditing && hasCustomPanelLayout && (
+                <button
+                  type="button"
+                  onClick={handleResetCustomLayouts}
+                  className="h-7 px-2.5 text-[11px] font-mono rounded bg-[#080c0a] border border-[#2e243b] hover:border-[#c084fc] text-[#9eb0a7] hover:text-[#d4e0da] flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  title="Reset moved and resized custom ledger panels"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Reset Boxes</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setLayoutEditMode((prev) => !prev)}
+                aria-pressed={isLayoutEditing}
+                className={`h-7 px-2.5 text-xs font-medium rounded border transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                  isLayoutEditing
+                    ? 'bg-[#a855f7] border-[#c084fc] text-[#080c0a] font-semibold'
+                    : 'bg-[#080c0a] border-[#581c87] text-[#d4e0da] hover:border-[#c084fc]'
+                }`}
+                title="Move and resize custom ledger text boxes"
+              >
+                {isLayoutEditing ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Done Layout</span>
+                  </>
+                ) : (
+                  <>
+                    <Move className="w-3.5 h-3.5 text-[#c084fc]" />
+                    <span>Edit Layout</span>
+                  </>
+                )}
+              </button>
+            </>
+          )}
+
           {!readOnly && !covertUnlocked && maskedPrivateCount > 0 && (
             <button
               type="button"
@@ -461,9 +547,18 @@ export const CustomLedgerScreen: React.FC<CustomLedgerScreenProps> = ({
 
           if (isMasked) {
             return (
-              <section
+              <MovableResizableBox
                 key={section.id}
                 id={`section-${section.id}`}
+                label={`Section 0${idx + 1}`}
+                layout={state.textBoxLayout?.[`custom-${section.id}`]}
+                editMode={isLayoutEditing}
+                readOnly={readOnly}
+                onChangeLayout={(next) =>
+                  handleUpdatePanelLayout(`custom-${section.id}`, next)
+                }
+                minWidth={240}
+                minHeight={220}
                 className="surface-clinical rounded p-4 min-h-[260px] flex flex-col items-center justify-center text-center gap-2 border-dashed border-[#2e243b]"
               >
                 <EyeOff className="w-5 h-5 text-[#65766e]" />
@@ -477,14 +572,23 @@ export const CustomLedgerScreen: React.FC<CustomLedgerScreenProps> = ({
                     ? 'This private panel is hidden while Party Share View is active.'
                     : 'Unlock Covert Arc via Ctrl+H or the Navigation Drawer to view or edit.'}
                 </p>
-              </section>
+              </MovableResizableBox>
             );
           }
 
           return (
-            <section
+            <MovableResizableBox
               key={section.id}
               id={`section-${section.id}`}
+              label={section.title.trim() || `Section 0${idx + 1}`}
+              layout={state.textBoxLayout?.[`custom-${section.id}`]}
+              editMode={isLayoutEditing}
+              readOnly={readOnly}
+              onChangeLayout={(next) =>
+                handleUpdatePanelLayout(`custom-${section.id}`, next)
+              }
+              minWidth={240}
+              minHeight={220}
               className={`rounded p-4 flex flex-col gap-2.5 min-h-[260px] transition-colors ${
                 section.isPrivate ? 'surface-resonant' : 'surface-clinical'
               }`}
@@ -739,7 +843,7 @@ export const CustomLedgerScreen: React.FC<CustomLedgerScreenProps> = ({
 
               {/* Auto-Saved Note Body */}
               {readOnly ? (
-                <div className="flex-1 bg-[#080c0a] border border-[#2e243b] rounded p-2.5 text-xs text-[#d4e0da] whitespace-pre-wrap leading-relaxed">
+                <div className="flex-1 min-h-0 overflow-y-auto bg-[#080c0a] border border-[#2e243b] rounded p-2.5 text-xs text-[#d4e0da] whitespace-pre-wrap leading-relaxed">
                   {section.content.trim() || (
                     <span className="text-[#65766e] italic">Empty panel</span>
                   )}
@@ -761,10 +865,10 @@ export const CustomLedgerScreen: React.FC<CustomLedgerScreenProps> = ({
                     }))
                   }
                   placeholder="Write custom ledger notes, tables, or trackers..."
-                  className="ledger-input flex-1 w-full p-2.5 text-xs leading-relaxed resize-y min-h-[185px]"
+                  className="ledger-input flex-1 w-full p-2.5 text-xs leading-relaxed resize-y min-h-[160px]"
                 />
               )}
-            </section>
+            </MovableResizableBox>
           );
         })}
       </div>

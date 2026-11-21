@@ -3,6 +3,7 @@ import {
   Cog,
   Download,
   Eye,
+  HelpCircle,
   Link2,
   Lock,
   Menu,
@@ -32,6 +33,7 @@ interface TopHeaderBarProps {
   onOpenSearch: () => void;
   onOpenEditor: () => void;
   onOpenExport: () => void;
+  isSavedVisible?: boolean;
 }
 
 const HOLD_DURATION_MS = 1100;
@@ -53,16 +55,42 @@ export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
   onOpenSearch,
   onOpenEditor,
   onOpenExport,
+  isSavedVisible = false,
 }) => {
   const [holdProgress, setHoldProgress] = useState(0);
   const [copiedLink, setCopiedLink] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [draftName, setDraftName] = useState(characterName);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const helpContainerRef = useRef<HTMLDivElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const holdTimerRef = useRef<number | null>(null);
   const holdStartRef = useRef<number>(0);
 
   const isPartyMode = viewMode === 'party';
+
+  useEffect(() => {
+    if (!helpOpen) return;
+    const handlePointerDown = (e: PointerEvent) => {
+      if (
+        helpContainerRef.current &&
+        !helpContainerRef.current.contains(e.target as Node)
+      ) {
+        setHelpOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setHelpOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [helpOpen]);
 
   useEffect(() => {
     if (!editingName) {
@@ -149,7 +177,7 @@ export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
   ];
 
   return (
-    <header className="sticky top-0 z-40 bg-[#080c0a]/95 backdrop-blur-sm border-b border-[#2e243b]">
+    <header className="print-hide sticky top-0 z-40 bg-[#080c0a]/95 backdrop-blur-sm border-b border-[#2e243b]">
       <div className="max-w-[1440px] mx-auto px-3 sm:px-6">
         {/* Primary Row */}
         <div className="min-h-14 py-2 flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
@@ -226,13 +254,28 @@ export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
                   {[occupation.trim(), setting.trim()].filter(Boolean).join(' · ')}
                 </span>
               )}
+              {!isPartyMode && (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  aria-hidden={!isSavedVisible}
+                  className={`inline-flex items-center gap-1 font-mono text-[11px] text-[#4af626] select-none transition-opacity duration-300 whitespace-nowrap shrink-0 ${
+                    isSavedVisible
+                      ? 'opacity-100'
+                      : 'opacity-0 pointer-events-none'
+                  }`}
+                >
+                  <Check className="w-3 h-3" />
+                  <span>Saved</span>
+                </span>
+              )}
             </div>
           </div>
 
-          {/* Screen Switcher */}
+          {/* Screen Switcher (Desktop/Tablet; mobile uses streamlined Bottom Tab Bar) */}
           <nav
             aria-label="Ledger screens"
-            className="flex items-center gap-1 bg-[#0b100e] border border-[#2e243b] rounded p-0.5 order-3 lg:order-2 w-full lg:w-auto justify-between lg:justify-start"
+            className="hidden md:flex items-center gap-1 bg-[#0b100e] border border-[#2e243b] rounded p-0.5 order-3 lg:order-2 w-full lg:w-auto justify-between lg:justify-start"
           >
             {screens.map((tab) => {
               const active = activeScreen === tab.id;
@@ -411,6 +454,148 @@ export const TopHeaderBar: React.FC<TopHeaderBarProps> = ({
                 <Download className="w-3.5 h-3.5" />
                 <span className="hidden md:inline font-mono text-[10px]">F6</span>
               </button>
+
+              {/* Keyboard Shortcuts Help Tooltip */}
+              <div
+                ref={helpContainerRef}
+                className="relative group"
+                onMouseEnter={() => setHelpOpen(true)}
+                onMouseLeave={() => setHelpOpen(false)}
+              >
+                <button
+                  type="button"
+                  onClick={() => setHelpOpen((prev) => !prev)}
+                  onFocus={() => setHelpOpen(true)}
+                  onBlur={(e) => {
+                    if (
+                      !helpContainerRef.current?.contains(
+                        e.relatedTarget as Node | null
+                      )
+                    ) {
+                      setHelpOpen(false);
+                    }
+                  }}
+                  aria-label="Keyboard shortcuts help"
+                  aria-expanded={helpOpen}
+                  aria-describedby="header-shortcuts-tooltip"
+                  className={`h-7 w-7 rounded border transition-colors flex items-center justify-center shrink-0 cursor-pointer ${
+                    helpOpen
+                      ? 'bg-[#171022] border-[#c084fc] text-[#c084fc]'
+                      : 'bg-[#0b100e] border-[#2e243b] text-[#9eb0a7] hover:border-[#581c87] hover:text-[#d4e0da]'
+                  }`}
+                >
+                  <HelpCircle className="w-3.5 h-3.5" />
+                </button>
+
+                <div
+                  id="header-shortcuts-tooltip"
+                  role="tooltip"
+                  className={`absolute right-0 top-full pt-1.5 z-50 w-72 transition-opacity duration-150 ${
+                    helpOpen
+                      ? 'opacity-100 pointer-events-auto'
+                      : 'opacity-0 pointer-events-none'
+                  }`}
+                >
+                  <div className="rounded bg-[#080c0a] border border-[#581c87] shadow-2xl p-3 flex flex-col gap-2.5 text-left">
+                    <div className="flex items-center justify-between border-b border-[#2e243b] pb-1.5">
+                      <span className="font-display text-[11px] uppercase tracking-[0.08em] text-[#c084fc]">
+                        Keyboard Shortcuts
+                      </span>
+                      <span className="font-mono text-[10px] text-[#65766e]">
+                        {isPartyMode ? 'Party Safe' : 'Active'}
+                      </span>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <div className="font-mono text-[9px] uppercase tracking-wider text-[#65766e]">
+                        Workspace &amp; Modals
+                      </div>
+                      <ul className="flex flex-col gap-1 text-[11px]">
+                        <li className="flex items-center justify-between gap-2">
+                          <span className="text-[#d4e0da]">Global Search</span>
+                          <kbd className="px-1.5 py-0.5 rounded bg-[#171022] border border-[#2e243b] font-mono text-[10px] text-[#c084fc] shrink-0">
+                            F2
+                          </kbd>
+                        </li>
+                        {!isPartyMode && (
+                          <li className="flex items-center justify-between gap-2">
+                            <span className="text-[#d4e0da]">
+                              Full Sheet &amp; Macro Editor
+                            </span>
+                            <kbd className="px-1.5 py-0.5 rounded bg-[#171022] border border-[#2e243b] font-mono text-[10px] text-[#c084fc] shrink-0">
+                              F5
+                            </kbd>
+                          </li>
+                        )}
+                        <li className="flex items-center justify-between gap-2">
+                          <span className="text-[#d4e0da]">Export Markdown</span>
+                          <kbd className="px-1.5 py-0.5 rounded bg-[#171022] border border-[#2e243b] font-mono text-[10px] text-[#c084fc] shrink-0">
+                            F6
+                          </kbd>
+                        </li>
+                        {!isPartyMode && (
+                          <li className="flex items-center justify-between gap-2">
+                            <span className="text-[#d4e0da]">
+                              Toggle Covert Arc Lock
+                            </span>
+                            <kbd className="px-1.5 py-0.5 rounded bg-[#171022] border border-[#2e243b] font-mono text-[10px] text-[#c084fc] shrink-0">
+                              Ctrl+H
+                            </kbd>
+                          </li>
+                        )}
+                        <li className="flex items-center justify-between gap-2">
+                          <span className="text-[#d4e0da]">
+                            Close Drawer / Modal
+                          </span>
+                          <kbd className="px-1.5 py-0.5 rounded bg-[#171022] border border-[#2e243b] font-mono text-[10px] text-[#c084fc] shrink-0">
+                            Esc
+                          </kbd>
+                        </li>
+                      </ul>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5 border-t border-[#2e243b] pt-2">
+                      <div className="font-mono text-[9px] uppercase tracking-wider text-[#65766e]">
+                        Dice Dock &amp; Macros
+                      </div>
+                      <ul className="flex flex-col gap-1 text-[11px]">
+                        <li className="flex items-center justify-between gap-2">
+                          <span className="text-[#d4e0da]">
+                            Roll Quick Macro Slot
+                          </span>
+                          <kbd className="px-1.5 py-0.5 rounded bg-[#171022] border border-[#2e243b] font-mono text-[10px] text-[#c084fc] shrink-0">
+                            1–9
+                          </kbd>
+                        </li>
+                        <li className="flex items-center justify-between gap-2">
+                          <span className="text-[#d4e0da]">
+                            Roll Macro (Advantage)
+                          </span>
+                          <kbd className="px-1.5 py-0.5 rounded bg-[#171022] border border-[#2e243b] font-mono text-[10px] text-[#c084fc] shrink-0">
+                            Shift+1–9
+                          </kbd>
+                        </li>
+                        <li className="flex items-center justify-between gap-2">
+                          <span className="text-[#d4e0da]">
+                            Roll Macro (Disadvantage)
+                          </span>
+                          <kbd className="px-1.5 py-0.5 rounded bg-[#171022] border border-[#2e243b] font-mono text-[10px] text-[#c084fc] shrink-0">
+                            Alt+1–9
+                          </kbd>
+                        </li>
+                        <li className="flex items-center justify-between gap-2">
+                          <span className="text-[#d4e0da]">
+                            Adv / Dis / Normal Mode
+                          </span>
+                          <kbd className="px-1.5 py-0.5 rounded bg-[#171022] border border-[#2e243b] font-mono text-[10px] text-[#c084fc] shrink-0">
+                            Shift+A/D/N
+                          </kbd>
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

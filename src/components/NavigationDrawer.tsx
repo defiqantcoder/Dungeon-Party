@@ -7,20 +7,40 @@ import {
   LayoutGrid,
   Link2,
   Lock,
+  Maximize2,
+  Minimize2,
   Package,
+  Printer,
   Search,
   Shield,
   SlidersHorizontal,
+  Trash2,
   Unlock,
   UserPlus,
+  Users,
   X,
 } from 'lucide-react';
-import { ActiveScreen, LedgerState, ViewMode } from '../types/ledger';
+import {
+  ActiveScreen,
+  CharacterSlot,
+  LedgerState,
+  UiDensity,
+  ViewMode,
+} from '../types/ledger';
+import { RaceAvatarSvg } from './RaceAvatarSvg';
 
 interface NavigationDrawerProps {
   open: boolean;
   onClose: () => void;
   state: LedgerState;
+  rosterSlots: CharacterSlot[];
+  activeSlotId: string;
+  onSelectSlot: (slotId: string) => void;
+  onDeleteSlot: (slotId: string) => void;
+  onOpenNewCharacterModal: () => void;
+  uiDensity: UiDensity;
+  onChangeUiDensity: (density: UiDensity) => void;
+  onPrintDossier: () => void;
   activeScreen: ActiveScreen;
   onSelectScreen: (screen: ActiveScreen) => void;
   viewMode: ViewMode;
@@ -40,6 +60,14 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
   open,
   onClose,
   state,
+  rosterSlots,
+  activeSlotId,
+  onSelectSlot,
+  onDeleteSlot,
+  onOpenNewCharacterModal,
+  uiDensity,
+  onChangeUiDensity,
+  onPrintDossier,
   activeScreen,
   onSelectScreen,
   viewMode,
@@ -55,6 +83,7 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
   const [holdProgress, setHoldProgress] = useState(0);
   const [copiedLink, setCopiedLink] = useState(false);
   const [confirmNewBlank, setConfirmNewBlank] = useState(false);
+  const [confirmDeleteSlotId, setConfirmDeleteSlotId] = useState<string | null>(null);
   const holdTimerRef = useRef<number | null>(null);
   const holdStartRef = useRef<number>(0);
 
@@ -94,6 +123,7 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
     if (!open) {
       cancelHold();
       setConfirmNewBlank(false);
+      setConfirmDeleteSlotId(null);
     }
     return () => cancelHold();
   }, [open]);
@@ -138,7 +168,7 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
 
   return (
     <div
-      className={`fixed inset-0 z-50 transition-opacity duration-200 ${
+      className={`print-hide fixed inset-0 z-50 transition-opacity duration-200 ${
         open ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
       }`}
       aria-hidden={!open}
@@ -468,40 +498,222 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
                 </span>
                 <span className="font-mono text-[10px] text-[#9eb0a7]">F6</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onPrintDossier();
+                }}
+                className="w-full px-3 py-2 rounded bg-[#080c0a] border border-[#2e243b] hover:border-[#581c87] text-xs text-[#d4e0da] flex items-center justify-between cursor-pointer"
+              >
+                <span className="flex items-center gap-2">
+                  <Printer className="w-3.5 h-3.5 text-[#c084fc]" />
+                  <span>Print Clinical Dossier (PDF)</span>
+                </span>
+                <span className="font-mono text-[10px] text-[#9eb0a7]">PRINT</span>
+              </button>
             </div>
           </div>
 
-          {/* 5. Character Setup (Player/DM View only) */}
+          {/* 5. Display Density Switch */}
+          <div className="flex flex-col gap-2 pt-3 border-t border-[#2e243b]">
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#9eb0a7]">
+                Display Density
+              </span>
+              <span className="font-mono text-[10px] text-[#c084fc] uppercase">
+                {uiDensity}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => onChangeUiDensity('cozy')}
+                className={`px-2.5 py-2 rounded border text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
+                  uiDensity === 'cozy'
+                    ? 'bg-[#171022] border-[#c084fc] text-[#d4e0da] font-semibold'
+                    : 'bg-[#080c0a] border-[#2e243b] text-[#9eb0a7] hover:border-[#581c87]'
+                }`}
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+                <span>Cozy</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onChangeUiDensity('compact')}
+                className={`px-2.5 py-2 rounded border text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
+                  uiDensity === 'compact'
+                    ? 'bg-[#171022] border-[#c084fc] text-[#d4e0da] font-semibold'
+                    : 'bg-[#080c0a] border-[#2e243b] text-[#9eb0a7] hover:border-[#581c87]'
+                }`}
+              >
+                <Minimize2 className="w-3.5 h-3.5" />
+                <span>Compact</span>
+              </button>
+            </div>
+          </div>
+
+          {/* 6. Character Roster & New Character Creator (Player/DM View only) */}
           {!isPartyMode && (
-            <div className="flex flex-col gap-2 pt-3 border-t border-[#2e243b]">
-              <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#9eb0a7]">
-                Character Setup
+            <div className="flex flex-col gap-2.5 pt-3 border-t border-[#2e243b]">
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#9eb0a7] flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5 text-[#c084fc]" />
+                  <span>Character Roster ({rosterSlots.length})</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenNewCharacterModal();
+                  }}
+                  className="px-2 py-0.5 rounded bg-[#a855f7] hover:bg-[#c084fc] text-[#080c0a] font-mono text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                >
+                  <UserPlus className="w-3 h-3" />
+                  <span>+ New</span>
+                </button>
               </div>
+
+              <div className="flex flex-col gap-1.5">
+                {rosterSlots.map((slot) => {
+                  const isActive = slot.id === activeSlotId;
+                  const slotName = slot.state.identity.name.trim() || 'Unnamed Character';
+                  const slotMeta = [
+                    slot.state.identity.race.trim(),
+                    slot.state.identity.occupation.trim(),
+                  ]
+                    .filter(Boolean)
+                    .join(' · ');
+
+                  return (
+                    <div
+                      key={slot.id}
+                      className={`rounded border transition-colors ${
+                        isActive
+                          ? 'bg-[#171022] border-[#c084fc]'
+                          : 'bg-[#080c0a] border-[#2e243b] hover:border-[#581c87]'
+                      }`}
+                    >
+                      <div className="p-2 flex items-center gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onSelectSlot(slot.id);
+                            onClose();
+                          }}
+                          className="flex items-center gap-2.5 flex-1 min-w-0 text-left cursor-pointer"
+                        >
+                          <div className="w-9 h-9 rounded bg-[#080c0a] border border-[#2e243b] overflow-hidden shrink-0 flex items-center justify-center">
+                            <RaceAvatarSvg
+                              race={slot.state.identity.avatarRace ?? 'gnome'}
+                              gender={slot.state.identity.avatarGender ?? 'male'}
+                              hpCurrent={slot.state.vitals.hpCurrent}
+                              hpMax={slot.state.vitals.hpMax}
+                              concentrating={slot.state.vitals.conditions.concentrating}
+                              poisoned={slot.state.vitals.conditions.poisoned}
+                              frightened={slot.state.vitals.conditions.frightened}
+                              showSpectacles={
+                                slot.state.identity.name
+                                  .toLowerCase()
+                                  .includes('pip') ||
+                                slot.state.identity.occupation
+                                  .toLowerCase()
+                                  .includes('medic')
+                              }
+                              label={slotName}
+                              className="w-9 h-9"
+                            />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs font-semibold text-[#d4e0da] truncate flex items-center gap-1.5">
+                              <span className="truncate">{slotName}</span>
+                              {isActive && (
+                                <span className="font-mono text-[9px] text-[#4af626] shrink-0">
+                                  ACTIVE
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[10px] text-[#9eb0a7] truncate">
+                              {slotMeta || `HP ${slot.state.vitals.hpCurrent}/${slot.state.vitals.hpMax}`}
+                            </div>
+                          </div>
+                        </button>
+
+                        {rosterSlots.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setConfirmDeleteSlotId(
+                                confirmDeleteSlotId === slot.id ? null : slot.id
+                              )
+                            }
+                            className="p-1.5 text-[#65766e] hover:text-[#ff4d4d] cursor-pointer shrink-0"
+                            title={`Delete ${slotName}`}
+                            aria-label={`Delete ${slotName}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+
+                      {confirmDeleteSlotId === slot.id && rosterSlots.length > 1 && (
+                        <div className="px-2 pb-2 pt-1 border-t border-[#2e243b] flex items-center justify-between gap-2 text-[11px]">
+                          <span className="text-[#ff4d4d] font-mono">
+                            Delete slot?
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onDeleteSlot(slot.id);
+                                setConfirmDeleteSlotId(null);
+                              }}
+                              className="px-2 py-0.5 rounded bg-[#ff4d4d] text-[#080c0a] font-bold cursor-pointer"
+                            >
+                              Delete
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteSlotId(null)}
+                              className="px-2 py-0.5 text-[#9eb0a7] hover:text-[#d4e0da] cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenNewCharacterModal();
+                }}
+                className="w-full px-3 py-2 rounded bg-[#171022] border border-[#a855f7] hover:border-[#c084fc] text-xs font-semibold text-[#c084fc] flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Add New Character (Choose Race &amp; Sprite)</span>
+              </button>
 
               {!confirmNewBlank ? (
                 <button
                   type="button"
                   onClick={() => setConfirmNewBlank(true)}
-                  className="w-full px-3 py-2 rounded bg-[#080c0a] border border-[#581c87] hover:border-[#c084fc] text-xs text-[#d4e0da] flex items-center justify-between cursor-pointer transition-colors"
+                  className="w-full px-3 py-1.5 rounded bg-[#080c0a] border border-[#2e243b] hover:border-[#ff4d4d]/70 text-[11px] text-[#9eb0a7] hover:text-[#ff4d4d] flex items-center justify-between cursor-pointer transition-colors"
                 >
-                  <span className="flex items-center gap-2">
-                    <UserPlus className="w-3.5 h-3.5 text-[#c084fc]" />
-                    <span>New Blank Character</span>
-                  </span>
-                  <span className="font-mono text-[10px] text-[#9eb0a7]">
-                    RESET
-                  </span>
+                  <span>Reset Active Sheet to Blank</span>
+                  <span className="font-mono text-[9px]">RESET</span>
                 </button>
               ) : (
-                <div className="bg-[#080c0a] border border-[#ff4d4d]/70 rounded p-3 flex flex-col gap-2.5">
+                <div className="bg-[#080c0a] border border-[#ff4d4d]/70 rounded p-3 flex flex-col gap-2">
                   <p className="text-[11px] text-[#d4e0da] leading-relaxed">
-                    Start a fresh blank character? This resets identity, stats,
-                    skills, vitals, gear, notes, macros (1–9), custom panels,
-                    and roll history in this browser.
-                  </p>
-                  <p className="text-[10px] text-[#9eb0a7] font-mono">
-                    Tip: Export a JSON backup (F5) first if you want to keep the
-                    current character.
+                    Reset the currently active character slot to a blank sheet?
+                    Other characters in your roster will remain untouched.
                   </p>
                   <div className="flex items-center gap-2">
                     <button
@@ -513,7 +725,7 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
                       }}
                       className="flex-1 px-2.5 py-1.5 rounded bg-[#ff4d4d] hover:bg-[#ff6666] text-[#080c0a] text-xs font-bold cursor-pointer"
                     >
-                      Confirm Blank Sheet
+                      Confirm Reset
                     </button>
                     <button
                       type="button"

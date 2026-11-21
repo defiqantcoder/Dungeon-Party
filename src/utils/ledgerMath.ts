@@ -1,5 +1,6 @@
 import {
   AbilityKey,
+  CurrencyWallet,
   LedgerState,
   ProficiencyRank,
   RollMode,
@@ -132,6 +133,38 @@ export function getInitiative(state: LedgerState): number {
     return state.vitals.initiativeOverride;
   }
   return getAbilityMod(state.abilities.DEX);
+}
+
+export function parseSpeedFeet(speedText: string, fallback = 30): number {
+  const match = speedText.match(/(\d+)/);
+  return match ? Math.max(0, parseInt(match[1], 10)) : fallback;
+}
+
+export function calculateTotalGoldValue(wallet: CurrencyWallet): number {
+  const totalCopper =
+    (wallet.pp || 0) * 1000 +
+    (wallet.gp || 0) * 100 +
+    (wallet.ep || 0) * 50 +
+    (wallet.sp || 0) * 10 +
+    (wallet.cp || 0);
+  return Math.round(totalCopper) / 100;
+}
+
+export function condenseCurrencyWallet(wallet: CurrencyWallet): CurrencyWallet {
+  let totalCopper =
+    Math.max(0, wallet.pp || 0) * 1000 +
+    Math.max(0, wallet.gp || 0) * 100 +
+    Math.max(0, wallet.ep || 0) * 50 +
+    Math.max(0, wallet.sp || 0) * 10 +
+    Math.max(0, wallet.cp || 0);
+
+  const pp = Math.floor(totalCopper / 1000);
+  totalCopper %= 1000;
+  const gp = Math.floor(totalCopper / 100);
+  totalCopper %= 100;
+  const sp = Math.floor(totalCopper / 10);
+  const cp = totalCopper % 10;
+  return { pp, gp, ep: 0, sp, cp };
 }
 
 export function formatTimestamp(date: Date = new Date()): string {
@@ -445,18 +478,22 @@ export function generateMarkdownSnapshot(
 
   if (options.includePersona) {
     lines.push('## Persona & Clinical Notes');
-    if (state.persona.traits.trim()) {
-      lines.push(`- **Traits:** ${state.persona.traits.trim()}`);
-    }
-    if (state.persona.ideals.trim()) {
-      lines.push(`- **Ideals:** ${state.persona.ideals.trim()}`);
-    }
-    if (state.persona.bonds.trim()) {
-      lines.push(`- **Bonds:** ${state.persona.bonds.trim()}`);
-    }
-    if (state.persona.flaws.trim()) {
-      lines.push(`- **Flaws:** ${state.persona.flaws.trim()}`);
-    }
+    const appendPersonaField = (label: string, raw: string) => {
+      const items = raw
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+      if (items.length === 1) {
+        lines.push(`- **${label}:** ${items[0]}`);
+      } else if (items.length > 1) {
+        lines.push(`- **${label}:**`);
+        items.forEach((item) => lines.push(`  - ${item}`));
+      }
+    };
+    appendPersonaField('Traits', state.persona.traits);
+    appendPersonaField('Ideals', state.persona.ideals);
+    appendPersonaField('Bonds', state.persona.bonds);
+    appendPersonaField('Flaws', state.persona.flaws);
     if (state.persona.clinicalNotes.trim()) {
       lines.push('');
       lines.push('### Clinical & Roleplay Notes');
@@ -520,14 +557,45 @@ export function generateMarkdownSnapshot(
       });
       lines.push('');
     }
+    if (state.features && state.features.length > 0) {
+      lines.push('### Features & Limited Uses');
+      state.features.forEach((f) => {
+        const remaining = Math.max(0, f.max - f.used);
+        const ruleLabel =
+          f.recharge === 'short'
+            ? 'Short Rest'
+            : f.recharge === 'long'
+            ? 'Long Rest'
+            : 'Manual';
+        lines.push(
+          `- **${f.name}**: ${remaining}/${f.max} remaining (${ruleLabel})${
+            f.notes ? ` — ${f.notes}` : ''
+          }`
+        );
+      });
+      lines.push('');
+    }
+    const c = state.gearAndNotes.currency;
     lines.push(
-      `**Currency:** ${state.gearAndNotes.currency.gp} GP · ${state.gearAndNotes.currency.sp} SP · ${state.gearAndNotes.currency.cp} CP`
+      `**Currency:** ${c.pp} PP · ${c.gp} GP · ${c.ep} EP · ${c.sp} SP · ${c.cp} CP *(Total: ${calculateTotalGoldValue(c).toFixed(2)} GP)*`
     );
     if (state.gearAndNotes.sessionCosts.length > 0) {
       lines.push('');
-      lines.push('### Session Costs');
-      state.gearAndNotes.sessionCosts.forEach((c) => {
-        lines.push(`- ${c.timestamp} ${c.description}: ${c.amount} ${c.currency}`);
+      lines.push('### Currency Transaction History');
+      state.gearAndNotes.sessionCosts.forEach((tx) => {
+        const isIncome =
+          tx.type === 'income' ||
+          (!tx.type && tx.amount.trim().startsWith('+'));
+        const cleanAmt = tx.amount.trim().replace(/^[+-]/, '');
+        const signedAmt = `${isIncome ? '+' : '-'}${cleanAmt || '0'} ${tx.currency}`;
+        const dateStamp =
+          tx.date?.trim() ||
+          tx.timestamp.match(/\d{4}-\d{2}-\d{2}/)?.[0] ||
+          tx.timestamp.replace(/^\[|\]$/g, '');
+        const extraNote = tx.notes?.trim() ? ` — ${tx.notes.trim()}` : '';
+        lines.push(
+          `- ${dateStamp ? `[${dateStamp}] ` : ''}**${signedAmt}** · ${tx.description}${extraNote}`
+        );
       });
     }
     lines.push('');

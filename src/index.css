@@ -108,6 +108,151 @@
   background: #581c87;
 }
 
+/* ============================================================================
+ * 3D Dice Result Keyframe Animations (Compositor-Only)
+ * ============================================================================ */
+.dice-result-stage {
+  perspective: 680px;
+  transform-style: preserve-3d;
+}
+
+@keyframes dice-pop-3d {
+  0% {
+    opacity: 0.45;
+    transform: perspective(680px) translateY(6px) translateZ(-30px) rotateX(-58deg) rotateY(14deg) scale(0.84);
+    filter: brightness(1.45);
+  }
+  42% {
+    opacity: 1;
+    transform: perspective(680px) translateY(-3px) translateZ(14px) rotateX(14deg) rotateY(-6deg) scale(1.07);
+    filter: brightness(1.18);
+  }
+  70% {
+    transform: perspective(680px) translateY(1px) translateZ(2px) rotateX(-6deg) rotateY(3deg) scale(0.985);
+    filter: brightness(1.04);
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(680px) translateY(0) translateZ(0) rotateX(0deg) rotateY(0deg) scale(1);
+    filter: brightness(1);
+  }
+}
+
+@keyframes dice-crit-3d {
+  0% {
+    opacity: 0.35;
+    transform: perspective(680px) translateY(8px) translateZ(-36px) rotateX(-75deg) rotateY(-18deg) rotateZ(-5deg) scale(0.75);
+    filter: brightness(1.85) drop-shadow(0 0 18px rgba(74, 246, 38, 0.85));
+  }
+  38% {
+    opacity: 1;
+    transform: perspective(680px) translateY(-5px) translateZ(22px) rotateX(18deg) rotateY(8deg) rotateZ(2.5deg) scale(1.13);
+    filter: brightness(1.45) drop-shadow(0 0 14px rgba(74, 246, 38, 0.65));
+  }
+  65% {
+    transform: perspective(680px) translateY(1px) translateZ(6px) rotateX(-8deg) rotateY(-4deg) rotateZ(-1.2deg) scale(1.03);
+    filter: brightness(1.15) drop-shadow(0 0 10px rgba(74, 246, 38, 0.4));
+  }
+  84% {
+    transform: perspective(680px) translateY(-1px) rotateX(3deg) rotateZ(0.5deg) scale(1.01);
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(680px) translateY(0) translateZ(0) rotateX(0deg) rotateY(0deg) rotateZ(0deg) scale(1);
+    filter: brightness(1);
+  }
+}
+
+@keyframes dice-fumble-3d {
+  0% {
+    opacity: 0.55;
+    transform: perspective(680px) translateY(-5px) translateZ(16px) rotateX(36deg) scale(1.06);
+    filter: brightness(1.55) drop-shadow(0 0 16px rgba(255, 77, 77, 0.8));
+  }
+  20% {
+    opacity: 1;
+    transform: perspective(680px) translateX(-6px) rotateY(-14deg) rotateZ(-4.5deg) scale(1.03);
+    filter: brightness(1.3) drop-shadow(0 0 12px rgba(255, 77, 77, 0.6));
+  }
+  40% {
+    transform: perspective(680px) translateX(6px) rotateY(14deg) rotateZ(4.2deg) scale(1.02);
+  }
+  58% {
+    transform: perspective(680px) translateX(-4px) rotateY(-8deg) rotateZ(-2.6deg) scale(1.01);
+  }
+  76% {
+    transform: perspective(680px) translateX(3px) rotateY(5deg) rotateZ(1.5deg) scale(1);
+  }
+  90% {
+    transform: perspective(680px) translateX(-1px) rotateZ(-0.6deg) scale(1);
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(680px) translateX(0) rotateX(0deg) rotateY(0deg) rotateZ(0deg) scale(1);
+    filter: brightness(1);
+  }
+}
+
+@keyframes dice-total-flip {
+  0% {
+    opacity: 0.2;
+    transform: perspective(420px) rotateX(82deg) scale(0.72);
+  }
+  52% {
+    opacity: 1;
+    transform: perspective(420px) rotateX(-16deg) scale(1.22);
+  }
+  78% {
+    transform: perspective(420px) rotateX(6deg) scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(420px) rotateX(0deg) scale(1);
+  }
+}
+
+@keyframes dice-history-new {
+  0% {
+    opacity: 0;
+    transform: perspective(520px) translateY(-8px) rotateX(-24deg) scale(0.97);
+  }
+  60% {
+    opacity: 1;
+    transform: perspective(520px) translateY(1px) rotateX(4deg) scale(1.01);
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(520px) translateY(0) rotateX(0deg) scale(1);
+  }
+}
+
+.dice-anim-pop {
+  animation: dice-pop-3d 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity, filter;
+}
+
+.dice-anim-crit {
+  animation: dice-crit-3d 540ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity, filter;
+}
+
+.dice-anim-fumble {
+  animation: dice-fumble-3d 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity, filter;
+}
+
+.dice-total-flip {
+  display: inline-block;
+  animation: dice-total-flip 400ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transform-origin: center;
+  will-change: transform, opacity;
+}
+
+.dice-history-new {
+  animation: dice-history-new 340ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -118,3 +263,128 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ============================================================================
+ * Compact Display Density Mode
+ * ============================================================================ */
+[data-density="compact"] main {
+  padding-top: 0.65rem;
+  padding-bottom: 7.5rem;
+}
+
+[data-density="compact"] section.surface-clinical,
+[data-density="compact"] section.surface-resonant {
+  padding: 0.65rem 0.75rem;
+}
+
+[data-density="compact"] .gap-4 {
+  gap: 0.65rem;
+}
+
+[data-density="compact"] .gap-3\.5 {
+  gap: 0.55rem;
+}
+
+[data-density="compact"] .gap-3 {
+  gap: 0.45rem;
+}
+
+[data-density="compact"] .py-2 {
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+}
+
+[data-density="compact"] .p-4 {
+  padding: 0.65rem 0.75rem;
+}
+
+[data-density="compact"] .p-2\.5 {
+  padding: 0.4rem 0.5rem;
+}
+
+/* ============================================================================
+ * Print / PDF-Ready Clinical Dossier View
+ * ============================================================================ */
+@media print {
+  @page {
+    margin: 0.5in;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    color: #111827 !important;
+    color-scheme: light !important;
+    font-size: 11px !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  header,
+  nav,
+  aside,
+  .print-hide {
+    display: none !important;
+  }
+
+  main {
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  .surface-clinical,
+  .surface-resonant,
+  .surface-modal,
+  [class*="bg-[#080c0a]"],
+  [class*="bg-[#0b100e]"],
+  [class*="bg-[#171022]"] {
+    background-color: #ffffff !important;
+    color: #111827 !important;
+    border-color: #cbd5e1 !important;
+    box-shadow: none !important;
+  }
+
+  section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    transform: none !important;
+    width: auto !important;
+    height: auto !important;
+  }
+
+  [class*="text-[#d4e0da]"],
+  [class*="text-[#9eb0a7]"],
+  [class*="text-[#c084fc]"],
+  [class*="text-[#a855f7]"] {
+    color: #111827 !important;
+  }
+
+  [class*="text-[#65766e]"] {
+    color: #4b5563 !important;
+  }
+
+  [class*="text-[#4af626]"] {
+    color: #15803d !important;
+  }
+
+  [class*="text-[#ff4d4d]"] {
+    color: #b91c1c !important;
+  }
+
+  input,
+  textarea,
+  select {
+    background: #ffffff !important;
+    color: #111827 !important;
+    border-color: #cbd5e1 !important;
+  }
+
+  .max-h-\[410px\],
+  .overflow-y-auto,
+  .overflow-auto {
+    max-height: none !important;
+    overflow: visible !important;
+  }
+}
+

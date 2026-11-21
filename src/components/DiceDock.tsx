@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Check,
   ChevronDown,
@@ -78,8 +78,27 @@ export const DiceDock: React.FC<DiceDockProps> = ({
   const [mobileOpen, setMobileOpen] = useState(false);
   const [customExpr, setCustomExpr] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [animatedRollId, setAnimatedRollId] = useState<string | null>(null);
 
   const latest = rollHistory[0] ?? null;
+  const prevLatestIdRef = useRef<string | null>(latest?.id ?? null);
+
+  useEffect(() => {
+    const currentId = latest?.id ?? null;
+    if (currentId && currentId !== prevLatestIdRef.current) {
+      setAnimatedRollId(currentId);
+    }
+    prevLatestIdRef.current = currentId;
+  }, [latest?.id]);
+
+  const shouldAnimateLatest = Boolean(latest && animatedRollId === latest.id);
+  const latestAnimClass = !shouldAnimateLatest
+    ? ''
+    : latest?.isNat20
+    ? 'dice-anim-crit'
+    : latest?.isNat1
+    ? 'dice-anim-fumble'
+    : 'dice-anim-pop';
 
   // Wire keyboard shortcuts: 1–9, Shift+1..9 (ADV), Alt+1..9 (DIS), Shift+A (Adv), Shift+D (Dis), Shift+N (Norm)
   useEffect(() => {
@@ -189,7 +208,7 @@ export const DiceDock: React.FC<DiceDockProps> = ({
   );
 
   return (
-    <div className="fixed bottom-0 inset-x-0 z-40 bg-[#0b100e]/98 border-t border-[#581c87] backdrop-blur-sm">
+    <div className="print-hide fixed bottom-12 md:bottom-0 inset-x-0 z-40 bg-[#0b100e]/98 border-t border-[#581c87] backdrop-blur-sm">
       {/* Expandable 25-Roll History Drawer */}
       {expanded && (
         <div className="border-b border-[#2e243b] bg-[#080c0a] max-h-56 overflow-y-auto">
@@ -216,10 +235,14 @@ export const DiceDock: React.FC<DiceDockProps> = ({
               </p>
             ) : (
               <div className="divide-y divide-[#1d1827]">
-                {rollHistory.map((item) => (
+                {rollHistory.map((item, idx) => (
                   <div
                     key={item.id}
-                    className="py-1.5 flex items-center justify-between gap-3 text-xs font-mono tabular-nums hover:bg-[#171022]/40 px-1 rounded transition-colors"
+                    className={`py-1.5 flex items-center justify-between gap-3 text-xs font-mono tabular-nums hover:bg-[#171022]/40 px-1 rounded transition-colors ${
+                      idx === 0 && animatedRollId === item.id
+                        ? 'dice-history-new bg-[#171022]/35'
+                        : ''
+                    }`}
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
                       <span className="text-[10px] text-[#65766e] shrink-0">
@@ -336,12 +359,13 @@ export const DiceDock: React.FC<DiceDockProps> = ({
           </div>
 
           {/* Latest roll compact readout + Quick d20 */}
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0 dice-result-stage">
             {latest ? (
               <button
+                key={latest.id}
                 type="button"
                 onClick={() => setExpanded((prev) => !prev)}
-                className={`px-1.5 py-0.5 rounded border text-[11px] font-mono tabular-nums flex items-center gap-1 cursor-pointer ${
+                className={`px-1.5 py-0.5 rounded border text-[11px] font-mono tabular-nums flex items-center gap-1 cursor-pointer ${latestAnimClass} ${
                   latest.isNat20
                     ? 'border-[#4af626] text-[#4af626] bg-[#4af626]/10'
                     : latest.isNat1
@@ -349,7 +373,9 @@ export const DiceDock: React.FC<DiceDockProps> = ({
                     : 'border-[#581c87] text-[#d4e0da] bg-[#171022]'
                 }`}
               >
-                <span className="font-bold">{latest.total}</span>
+                <span className={`font-bold ${shouldAnimateLatest ? 'dice-total-flip' : ''}`}>
+                  {latest.total}
+                </span>
               </button>
             ) : null}
             <button
@@ -444,10 +470,11 @@ export const DiceDock: React.FC<DiceDockProps> = ({
             </div>
 
             {/* Latest Roll Readout & History Toggle */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 dice-result-stage">
               {latest ? (
                 <div
-                  className={`px-2.5 py-1 rounded border font-mono text-xs tabular-nums flex items-center gap-2 ${
+                  key={latest.id}
+                  className={`px-2.5 py-1 rounded border font-mono text-xs tabular-nums flex items-center gap-2 ${latestAnimClass} ${
                     latest.isNat20
                       ? 'bg-[#4af626]/10 border-[#4af626] text-[#4af626] glow-green'
                       : latest.isNat1
@@ -464,7 +491,11 @@ export const DiceDock: React.FC<DiceDockProps> = ({
                       <span>{formatSigned(latest.modifier)}</span>
                     )}
                   </span>
-                  <span className="text-sm font-bold">
+                  <span
+                    className={`text-sm font-bold ${
+                      shouldAnimateLatest ? 'dice-total-flip' : ''
+                    }`}
+                  >
                     {latest.total}
                   </span>
                   {latest.isNat20 && (

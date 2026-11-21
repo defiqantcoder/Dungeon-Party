@@ -8,6 +8,44 @@ export type ViewMode = 'player' | 'party';
 
 export type RollMode = 'normal' | 'adv' | 'dis';
 
+export type UiDensity = 'cozy' | 'compact';
+
+export type CurrencyDenom = 'PP' | 'GP' | 'EP' | 'SP' | 'CP';
+
+export type AvatarRace =
+  | 'gnome'
+  | 'human'
+  | 'elf'
+  | 'dwarf'
+  | 'halfling'
+  | 'dragonborn'
+  | 'tiefling'
+  | 'half-orc'
+  | 'half-elf'
+  | 'tabaxi'
+  | 'warforged'
+  | 'aasimar';
+
+export type AvatarGender = 'male' | 'female';
+
+export type RechargeRule = 'short' | 'long' | 'manual';
+
+export interface FeatureResource {
+  id: string;
+  name: string;
+  max: number;
+  used: number;
+  recharge: RechargeRule;
+  notes: string;
+}
+
+export interface ActionEconomyState {
+  actionUsed: boolean;
+  bonusActionUsed: boolean;
+  reactionUsed: boolean;
+  movementUsed: number;
+}
+
 export interface SkillEntry {
   id: string;
   name: string;
@@ -66,12 +104,17 @@ export interface SupplyCounter {
   notes: string;
 }
 
+export type TransactionType = 'income' | 'expense';
+
 export interface SessionCostLine {
   id: string;
   timestamp: string;
+  date?: string;
+  type?: TransactionType;
   description: string;
+  notes?: string;
   amount: string;
-  currency: 'GP' | 'SP' | 'CP';
+  currency: CurrencyDenom;
 }
 
 export interface CampaignLogEntry {
@@ -119,6 +162,21 @@ export interface CustomCondition {
   description?: string;
 }
 
+export interface TextBoxLayoutItem {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+}
+
+export interface CurrencyWallet {
+  pp: number;
+  gp: number;
+  ep: number;
+  sp: number;
+  cp: number;
+}
+
 export interface LedgerState {
   version: number;
   identity: {
@@ -132,6 +190,8 @@ export interface LedgerState {
     specialty: string;
     portraitStandard: string | null; // Data URL
     portraitVessel: string | null; // Data URL (private/covert)
+    avatarRace?: AvatarRace;
+    avatarGender?: AvatarGender;
   };
   abilities: Record<AbilityKey, number>;
   proficiencyBonus: number;
@@ -159,7 +219,9 @@ export interface LedgerState {
       exhaustion: number; // 0..6
       extra: CustomCondition[];
     };
+    actionEconomy?: ActionEconomyState;
   };
+  features?: FeatureResource[];
   persona: {
     traits: string;
     ideals: string;
@@ -178,11 +240,7 @@ export interface LedgerState {
     spellSlots: SpellSlotLevel[];
     gear: GearItem[];
     miniatureSupplies: SupplyCounter[];
-    currency: {
-      gp: number;
-      sp: number;
-      cp: number;
-    };
+    currency: CurrencyWallet;
     sessionCosts: SessionCostLine[];
     scratchpad: string;
     scratchpadPrivate?: boolean;
@@ -190,4 +248,17 @@ export interface LedgerState {
   };
   customLedger: CustomLedgerSection[];
   customMacros: DiceMacro[];
+  textBoxLayout?: Record<string, TextBoxLayoutItem>;
+}
+
+export interface CharacterSlot {
+  id: string;
+  state: LedgerState;
+  rollHistory: RollRecord[];
+  updatedAt: string;
+}
+
+export interface CharacterRoster {
+  activeId: string;
+  slots: CharacterSlot[];
 }

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FileSpreadsheet, LayoutGrid, Package, X } from 'lucide-react';
 import { CoreSheetScreen } from './components/CoreSheetScreen';
 import { CustomLedgerScreen } from './components/CustomLedgerScreen';
 import { DiceDock } from './components/DiceDock';
@@ -10,12 +10,18 @@ import {
   FullEditorModal,
   GlobalSearchModal,
 } from './components/GlobalModals';
-import { SrdPickerKind, SrdPickerModal } from './components/SrdPickerModal';
 import { NavigationDrawer } from './components/NavigationDrawer';
+import { NewCharacterModal } from './components/NewCharacterModal';
+import { SrdPickerKind, SrdPickerModal } from './components/SrdPickerModal';
 import { TopHeaderBar } from './components/TopHeaderBar';
-import { createBlankCharacterState } from './data/defaultState';
+import {
+  BlankCharacterOptions,
+  createBlankCharacterState,
+} from './data/defaultState';
 import {
   ActiveScreen,
+  CharacterRoster,
+  CharacterSlot,
   CustomCondition,
   GearItem,
   LedgerState,
@@ -23,15 +29,16 @@ import {
   RollRecord,
   SpellEntry,
   SupplyCounter,
+  UiDensity,
   ViewMode,
 } from './types/ledger';
-import { rollD20Check, rollDiceExpression } from './utils/ledgerMath';
+import { createId, rollD20Check, rollDiceExpression } from './utils/ledgerMath';
 import {
-  loadLedgerState,
-  loadRollHistory,
+  loadCharacterRoster,
+  loadUiDensity,
   MAX_ROLL_HISTORY,
-  saveLedgerState,
-  saveRollHistory,
+  saveCharacterRoster,
+  saveUiDensity,
 } from './utils/storage';
 
 function detectInitialPartyParam(): boolean {
@@ -45,7 +52,10 @@ function detectInitialPartyParam(): boolean {
 
 export default function App() {
   const [urlPartyParam] = useState<boolean>(() => detectInitialPartyParam());
-  const [state, setState] = useState<LedgerState>(() => loadLedgerState());
+  const [roster, setRoster] = useState<CharacterRoster>(() =>
+    loadCharacterRoster()
+  );
+  const [uiDensity, setUiDensity] = useState<UiDensity>(() => loadUiDensity());
   const [activeScreen, setActiveScreen] = useState<ActiveScreen>('core');
   const [viewMode, setViewMode] = useState<ViewMode>(() =>
     urlPartyParam ? 'party' : 'player'
@@ -53,11 +63,8 @@ export default function App() {
   // Covert Arc ALWAYS defaults to locked/masked on every load
   const [covertUnlocked, setCovertUnlocked] = useState<boolean>(false);
 
-  // Dice Dock state
+  // Dice Dock mode
   const [rollMode, setRollMode] = useState<RollMode>('normal');
-  const [rollHistory, setRollHistory] = useState<RollRecord[]>(() =>
-    loadRollHistory()
-  );
 
   // Drawer & Modals
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -65,19 +72,57 @@ export default function App() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorInitialTab, setEditorInitialTab] = useState<EditorTab>('stats');
   const [exportOpen, setExportOpen] = useState(false);
+  const [newCharModalOpen, setNewCharModalOpen] = useState(false);
   const [srdPickerKind, setSrdPickerKind] = useState<SrdPickerKind | null>(null);
 
   const isPartyMode = viewMode === 'party';
 
-  // Persist state automatically to localStorage
-  useEffect(() => {
-    saveLedgerState(state);
-  }, [state]);
+  const activeSlot = useMemo<CharacterSlot>(
+    () => roster.slots.find((s) => s.id === roster.activeId) ?? roster.slots[0],
+    [roster]
+  );
 
-  // Persist roll history automatically
+  const state = activeSlot.state;
+  const rollHistory = activeSlot.rollHistory;
+
+  // Subtle "Saved" indicator triggered whenever localStorage is updated (skipped on initial mount)
+  const [savedVisible, setSavedVisible] = useState(false);
+  const hasMountedRosterRef = useRef(false);
+  const savedTimerRef = useRef<number | null>(null);
+
+  const flashSavedIndicator = useCallback(() => {
+    setSavedVisible(true);
+    if (savedTimerRef.current !== null) {
+      window.clearTimeout(savedTimerRef.current);
+    }
+    savedTimerRef.current = window.setTimeout(() => {
+      setSavedVisible(false);
+      savedTimerRef.current = null;
+    }, 2000);
+  }, []);
+
   useEffect(() => {
-    saveRollHistory(rollHistory);
-  }, [rollHistory]);
+    return () => {
+      if (savedTimerRef.current !== null) {
+        window.clearTimeout(savedTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Persist character roster automatically to localStorage
+  useEffect(() => {
+    saveCharacterRoster(roster);
+    if (!hasMountedRosterRef.current) {
+      hasMountedRosterRef.current = true;
+      return;
+    }
+    flashSavedIndicator();
+  }, [roster, flashSavedIndicator]);
+
+  // Persist display density preference
+  useEffect(() => {
+    saveUiDensity(uiDensity);
+  }, [uiDensity]);
 
   // Enforce Covert Lock whenever entering Party Share View
   const handleToggleViewMode = useCallback((nextMode: ViewMode) => {
@@ -85,6 +130,7 @@ export default function App() {
     if (nextMode === 'party') {
       setCovertUnlocked(false);
       setEditorOpen(false);
+      setNewCharModalOpen(false);
       setSrdPickerKind(null);
     }
   }, []);
@@ -96,45 +142,134 @@ export default function App() {
 
   const handleUpdateState = useCallback(
     (updater: (prev: LedgerState) => LedgerState) => {
-      setState((prev) => updater(prev));
+      setRoster((prevRoster) => ({
+        ...prevRoster,
+        slots: prevRoster.slots.map((slot) =>
+          slot.id === prevRoster.activeId
+            ? {
+                ...slot,
+                state: updater(slot.state),
+                updatedAt: new Date().toISOString(),
+              }
+            : slot
+        ),
+      }));
+    },
+    []
+  );
+
+  const updateActiveRolls = useCallback(
+    (updater: (prev: RollRecord[]) => RollRecord[]) => {
+      setRoster((prevRoster) => ({
+        ...prevRoster,
+        slots: prevRoster.slots.map((slot) =>
+          slot.id === prevRoster.activeId
+            ? {
+                ...slot,
+                rollHistory: updater(slot.rollHistory),
+              }
+            : slot
+        ),
+      }));
     },
     []
   );
 
   const [undoSnapshot, setUndoSnapshot] = useState<{
-    state: LedgerState;
-    rolls: RollRecord[];
+    roster: CharacterRoster;
     label: string;
   } | null>(null);
 
   const handleCreateBlankCharacter = useCallback(() => {
     setUndoSnapshot({
-      state,
-      rolls: rollHistory,
+      roster,
       label: state.identity.name.trim() || 'Character Sheet',
     });
-    setState(createBlankCharacterState());
-    setRollHistory([]);
+    setRoster((prevRoster) => ({
+      ...prevRoster,
+      slots: prevRoster.slots.map((slot) =>
+        slot.id === prevRoster.activeId
+          ? {
+              ...slot,
+              state: createBlankCharacterState(),
+              rollHistory: [],
+              updatedAt: new Date().toISOString(),
+            }
+          : slot
+      ),
+    }));
     setCovertUnlocked(false);
     setActiveScreen('core');
-  }, [state, rollHistory]);
+  }, [roster, state.identity.name]);
+
+  const handleAddCharacterSlot = useCallback((options: BlankCharacterOptions) => {
+    const newSlotId = createId('char');
+    const newSlot: CharacterSlot = {
+      id: newSlotId,
+      state: createBlankCharacterState(options),
+      rollHistory: [],
+      updatedAt: new Date().toISOString(),
+    };
+    setRoster((prevRoster) => ({
+      activeId: newSlotId,
+      slots: [...prevRoster.slots, newSlot],
+    }));
+    setCovertUnlocked(false);
+    setActiveScreen('core');
+    setNewCharModalOpen(false);
+  }, []);
+
+  const handleSelectSlot = useCallback((slotId: string) => {
+    setRoster((prevRoster) => {
+      if (!prevRoster.slots.some((s) => s.id === slotId)) return prevRoster;
+      return {
+        ...prevRoster,
+        activeId: slotId,
+      };
+    });
+    // Always re-lock Covert Arc when switching characters for safety
+    setCovertUnlocked(false);
+  }, []);
+
+  const handleDeleteSlot = useCallback(
+    (slotId: string) => {
+      if (roster.slots.length <= 1) return;
+      const target = roster.slots.find((s) => s.id === slotId);
+      setUndoSnapshot({
+        roster,
+        label: target?.state.identity.name.trim() || 'Deleted Character',
+      });
+      setRoster((prevRoster) => {
+        const remaining = prevRoster.slots.filter((s) => s.id !== slotId);
+        if (remaining.length === 0) return prevRoster;
+        const nextActiveId =
+          prevRoster.activeId === slotId
+            ? remaining[0].id
+            : prevRoster.activeId;
+        return {
+          activeId: nextActiveId,
+          slots: remaining,
+        };
+      });
+      setCovertUnlocked(false);
+    },
+    [roster]
+  );
 
   const handleReplaceState = useCallback(
     (next: LedgerState) => {
       setUndoSnapshot({
-        state,
-        rolls: rollHistory,
+        roster,
         label: state.identity.name.trim() || 'Character Sheet',
       });
-      setState(next);
+      handleUpdateState(() => next);
     },
-    [state, rollHistory]
+    [roster, state.identity.name, handleUpdateState]
   );
 
   const handleUndoReset = useCallback(() => {
     if (!undoSnapshot) return;
-    setState(undoSnapshot.state);
-    setRollHistory(undoSnapshot.rolls);
+    setRoster(undoSnapshot.roster);
     setUndoSnapshot(null);
   }, [undoSnapshot]);
 
@@ -145,9 +280,12 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [undoSnapshot]);
 
-  const pushRoll = useCallback((record: RollRecord) => {
-    setRollHistory((prev) => [record, ...prev].slice(0, MAX_ROLL_HISTORY));
-  }, []);
+  const pushRoll = useCallback(
+    (record: RollRecord) => {
+      updateActiveRolls((prev) => [record, ...prev].slice(0, MAX_ROLL_HISTORY));
+    },
+    [updateActiveRolls]
+  );
 
   const handleRollD20 = useCallback(
     (label: string, modifier: number, overrideMode?: RollMode) => {
@@ -186,7 +324,13 @@ export default function App() {
     []
   );
 
-  // Global keyboard shortcuts: F2 Search, F5 Editor, F6 Export, Ctrl+Shift+U / Alt+Shift+L Covert Lock, Esc close
+  const handlePrintDossier = useCallback(() => {
+    window.setTimeout(() => {
+      window.print();
+    }, 60);
+  }, []);
+
+  // Global keyboard shortcuts: F2 Search, F5 Editor, F6 Export, Ctrl+H / Ctrl+Shift+U / Alt+Shift+L Covert Lock, Esc close
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -194,6 +338,7 @@ export default function App() {
         setSearchOpen(false);
         setEditorOpen(false);
         setExportOpen(false);
+        setNewCharModalOpen(false);
         setSrdPickerKind(null);
         return;
       }
@@ -240,7 +385,7 @@ export default function App() {
   }, [isPartyMode]);
 
   const handleAddSpell = (spell: SpellEntry) => {
-    setState((prev) => ({
+    handleUpdateState((prev) => ({
       ...prev,
       gearAndNotes: {
         ...prev.gearAndNotes,
@@ -250,7 +395,7 @@ export default function App() {
   };
 
   const handleAddGear = (item: GearItem) => {
-    setState((prev) => ({
+    handleUpdateState((prev) => ({
       ...prev,
       gearAndNotes: {
         ...prev.gearAndNotes,
@@ -260,7 +405,7 @@ export default function App() {
   };
 
   const handleAddSupply = (supply: SupplyCounter) => {
-    setState((prev) => ({
+    handleUpdateState((prev) => ({
       ...prev,
       gearAndNotes: {
         ...prev.gearAndNotes,
@@ -270,7 +415,7 @@ export default function App() {
   };
 
   const handleAddCondition = (cond: CustomCondition) => {
-    setState((prev) => ({
+    handleUpdateState((prev) => ({
       ...prev,
       vitals: {
         ...prev.vitals,
@@ -283,7 +428,10 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#080c0a] text-[#d4e0da] flex flex-col">
+    <div
+      data-density={uiDensity}
+      className="min-h-screen bg-[#080c0a] text-[#d4e0da] flex flex-col"
+    >
       {/* Persistent Top Header Bar */}
       <TopHeaderBar
         characterName={state.identity.name}
@@ -310,11 +458,12 @@ export default function App() {
           setEditorOpen(true);
         }}
         onOpenExport={() => setExportOpen(true)}
+        isSavedVisible={savedVisible && !isPartyMode}
       />
 
       {/* Party Share Mode Banner */}
       {isPartyMode && (
-        <div className="bg-[#4af626]/8 border-b border-[#4af626]/30">
+        <div className="print-hide bg-[#4af626]/8 border-b border-[#4af626]/30">
           <div className="max-w-[1440px] mx-auto px-3 sm:px-6 py-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-[#4af626]">
             <span>
               PARTY SHARE VIEW (SAFE MODE) — Read-only shared view. Private
@@ -331,12 +480,12 @@ export default function App() {
         </div>
       )}
 
-      {/* Undo / Revert Toast for Accidental Reset or Replace */}
+      {/* Undo / Revert Toast for Accidental Reset, Delete, or Replace */}
       {undoSnapshot && !isPartyMode && (
-        <div className="bg-[#171022] border-b border-[#a855f7] px-4 py-2 flex items-center justify-between gap-3 text-xs text-[#d4e0da] shadow-lg animate-in fade-in duration-150">
+        <div className="print-hide bg-[#171022] border-b border-[#a855f7] px-4 py-2 flex items-center justify-between gap-3 text-xs text-[#d4e0da] shadow-lg animate-in fade-in duration-150">
           <div className="max-w-[1440px] mx-auto w-full flex items-center justify-between gap-2">
             <span>
-              Character reset or replaced. Revert back to{' '}
+              Character updated or removed. Revert back to{' '}
               <strong className="text-[#c084fc]">{undoSnapshot.label}</strong>?
             </span>
             <div className="flex items-center gap-2 shrink-0">
@@ -361,7 +510,7 @@ export default function App() {
       )}
 
       {/* Main Workspace Viewport */}
-      <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-4 pb-36 md:pb-32">
+      <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-4 pb-44 md:pb-32">
         {activeScreen === 'core' && (
           <CoreSheetScreen
             state={state}
@@ -403,11 +552,19 @@ export default function App() {
         )}
       </main>
 
-      {/* Left Slide-Over Navigation & Mode Drawer */}
+      {/* Left Slide-Over Navigation, Roster & Mode Drawer */}
       <NavigationDrawer
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         state={state}
+        rosterSlots={roster.slots}
+        activeSlotId={roster.activeId}
+        onSelectSlot={handleSelectSlot}
+        onDeleteSlot={handleDeleteSlot}
+        onOpenNewCharacterModal={() => setNewCharModalOpen(true)}
+        uiDensity={uiDensity}
+        onChangeUiDensity={setUiDensity}
+        onPrintDossier={handlePrintDossier}
         activeScreen={activeScreen}
         onSelectScreen={setActiveScreen}
         viewMode={viewMode}
@@ -424,7 +581,7 @@ export default function App() {
         onOpenExport={() => setExportOpen(true)}
       />
 
-      {/* Persistent Bottom Dice Dock */}
+      {/* Persistent Bottom Dice Dock (sits cleanly above mobile tab bar on < md) */}
       <DiceDock
         state={state}
         rollMode={rollMode}
@@ -432,7 +589,7 @@ export default function App() {
         rollHistory={rollHistory}
         onRollD20={handleRollD20}
         onRollExpression={handleRollExpression}
-        onClearHistory={() => setRollHistory([])}
+        onClearHistory={() => updateActiveRolls(() => [])}
         onOpenMacroEditor={() => {
           setEditorInitialTab('macros');
           setEditorOpen(true);
@@ -443,9 +600,61 @@ export default function App() {
           !searchOpen &&
           !editorOpen &&
           !exportOpen &&
+          !newCharModalOpen &&
           !srdPickerKind
         }
       />
+
+      {/* Streamlined Mobile Bottom Tab Bar (< md viewports) */}
+      <nav
+        aria-label="Mobile screen navigation"
+        className="print-hide md:hidden fixed bottom-0 inset-x-0 z-40 h-12 bg-[#080c0a]/98 border-t border-[#2e243b] grid grid-cols-3"
+      >
+        {(
+          [
+            {
+              id: 'core',
+              label: 'Core Sheet',
+              icon: <FileSpreadsheet className="w-4 h-4" />,
+            },
+            {
+              id: 'gear',
+              label: 'Gear & Notes',
+              icon: <Package className="w-4 h-4" />,
+            },
+            {
+              id: 'custom',
+              label: 'Custom',
+              icon: <LayoutGrid className="w-4 h-4" />,
+            },
+          ] as const
+        ).map((tab) => {
+          const active = activeScreen === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveScreen(tab.id)}
+              className={`flex flex-col items-center justify-center gap-0.5 text-[10px] font-mono transition-colors cursor-pointer ${
+                active
+                  ? 'text-[#c084fc] bg-[#171022]/80 border-t-2 border-[#a855f7]'
+                  : 'text-[#9eb0a7] hover:text-[#d4e0da] border-t-2 border-transparent'
+              }`}
+            >
+              {tab.icon}
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* New Character Creator Modal (12 Races × Male/Female HP-Reactive Sprites) */}
+      {newCharModalOpen && !isPartyMode && (
+        <NewCharacterModal
+          onClose={() => setNewCharModalOpen(false)}
+          onCreateCharacter={handleAddCharacterSlot}
+        />
+      )}
 
       {/* Contextual On-Demand 2014 5e SRD / Custom Picker Modal */}
       {srdPickerKind && !isPartyMode && (
@@ -481,6 +690,7 @@ export default function App() {
           onUpdateState={handleUpdateState}
           onReplaceState={handleReplaceState}
           onNewBlankCharacter={handleCreateBlankCharacter}
+          onOpenNewCharacterModal={() => setNewCharModalOpen(true)}
         />
       )}
 

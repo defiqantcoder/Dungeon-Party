@@ -1,8 +1,13 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
+  ArrowDownLeft,
   ArrowDownToLine,
+  ArrowRightLeft,
   ArrowUpFromLine,
+  ArrowUpRight,
   BookOpen,
+  Calendar,
+  Check,
   Clock,
   Cog,
   Coins,
@@ -10,6 +15,8 @@ import {
   EyeOff,
   FileText,
   Lock,
+  Minus,
+  Move,
   Package,
   Plus,
   RotateCcw,
@@ -24,20 +31,27 @@ import {
 import {
   AttackEntry,
   CampaignLogEntry,
+  CurrencyDenom,
+  CurrencyWallet,
   GearItem,
   LedgerState,
   RollMode,
   SessionCostLine,
   SpellEntry,
   SupplyCounter,
+  TextBoxLayoutItem,
+  TransactionType,
 } from '../types/ledger';
 import {
+  calculateTotalGoldValue,
+  condenseCurrencyWallet,
   createId,
   formatSigned,
   formatTimestamp,
   getSpellAttackBonus,
   getSpellSaveDc,
 } from '../utils/ledgerMath';
+import { MovableResizableBox } from './MovableResizableBox';
 
 interface GearNotesScreenProps {
   state: LedgerState;
@@ -94,11 +108,21 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
     notes: '',
   });
 
-  // Add Session Cost state
+  // Add Transaction History entry state
+  const getTodayIsoDate = () => {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  };
+  const [costType, setCostType] = useState<TransactionType>('expense');
   const [costDesc, setCostDesc] = useState('');
+  const [costNotes, setCostNotes] = useState('');
   const [costAmount, setCostAmount] = useState('');
-  const [costCurrency, setCostCurrency] = useState<'GP' | 'SP' | 'CP'>('GP');
+  const [costCurrency, setCostCurrency] = useState<CurrencyDenom>('GP');
+  const [costDate, setCostDate] = useState<string>(() => getTodayIsoDate());
   const [applyCostToWallet, setApplyCostToWallet] = useState(true);
+  const [txFilter, setTxFilter] = useState<'all' | 'income' | 'expense'>('all');
+  const [txSearch, setTxSearch] = useState('');
 
   // Campaign Log filter & new entry state
   const [logSearch, setLogSearch] = useState('');
@@ -117,6 +141,27 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
   } | null>(null);
   const undoTimeoutRef = useRef<number | null>(null);
   const scratchpadRef = useRef<HTMLTextAreaElement | null>(null);
+  const [notesLayoutEdit, setNotesLayoutEdit] = useState(false);
+  const isNotesLayoutEditing = !readOnly && notesLayoutEdit;
+
+  const handleUpdateNotesBoxLayout = (
+    boxId: string,
+    next: TextBoxLayoutItem | null
+  ) => {
+    if (readOnly) return;
+    onUpdateState((prev) => {
+      const current = { ...(prev.textBoxLayout ?? {}) };
+      if (!next) {
+        delete current[boxId];
+      } else {
+        current[boxId] = next;
+      }
+      return {
+        ...prev,
+        textBoxLayout: current,
+      };
+    });
+  };
 
   const handleDeleteWithUndo = (
     kind: 'attack' | 'spell' | 'gear' | 'supply' | 'cost' | 'log',
@@ -373,37 +418,98 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
     }));
   };
 
-  /* ---- Handlers: Currency & Session Costs ---- */
+  /* ---- Handlers: Currency & Transaction History Log ---- */
+  const resolveTxType = (tx: SessionCostLine): TransactionType =>
+    tx.type === 'income' || tx.type === 'expense'
+      ? tx.type
+      : tx.amount.trim().startsWith('+')
+      ? 'income'
+      : 'expense';
+
+  const resolveTxDate = (tx: SessionCostLine): string => {
+    if (tx.date && tx.date.trim()) return tx.date.trim();
+    const match = tx.timestamp.match(/\d{4}-\d{2}-\d{2}/);
+    return match ? match[0] : tx.timestamp.replace(/^\[|\]$/g, '').slice(0, 10);
+  };
+
+  const filteredTransactions = useMemo(() => {
+    const q = txSearch.trim().toLowerCase();
+    return state.gearAndNotes.sessionCosts.filter((tx) => {
+      const txType = resolveTxType(tx);
+      if (txFilter !== 'all' && txType !== txFilter) return false;
+      if (!q) return true;
+      return `${tx.description} ${tx.notes ?? ''} ${tx.amount} ${tx.currency} ${resolveTxDate(tx)}`
+        .toLowerCase()
+        .includes(q);
+    });
+  }, [state.gearAndNotes.sessionCosts, txFilter, txSearch]);
+
+  const txNetGoldSummary = useMemo(() => {
+    const rates: Record<CurrencyDenom, number> = {
+      PP: 10,
+      GP: 1,
+      EP: 0.5,
+      SP: 0.1,
+      CP: 0.01,
+    };
+    let incomeGp = 0;
+    let expenseGp = 0;
+    state.gearAndNotes.sessionCosts.forEach((tx) => {
+      const numeric = Math.abs(
+        parseFloat(tx.amount.replace(/[^0-9.]/g, '')) || 0
+      );
+      const gpVal = numeric * rates[tx.currency];
+      if (resolveTxType(tx) === 'income') {
+        incomeGp += gpVal;
+      } else {
+        expenseGp += gpVal;
+      }
+    });
+    return {
+      incomeGp,
+      expenseGp,
+      netGp: incomeGp - expenseGp,
+    };
+  }, [state.gearAndNotes.sessionCosts]);
+
   const handleAddCost = (e: React.FormEvent) => {
     e.preventDefault();
     if (!costDesc.trim() || !costAmount.trim()) return;
 
     const rawTrimmed = costAmount.trim();
+    const numericVal = Math.abs(
+      parseInt(rawTrimmed.replace(/[^0-9]/g, ''), 10) || 0
+    );
+    const effectiveType: TransactionType = rawTrimmed.startsWith('+')
+      ? 'income'
+      : rawTrimmed.startsWith('-')
+      ? 'expense'
+      : costType;
+    const formattedAmount = `${effectiveType === 'income' ? '+' : '-'}${
+      numericVal > 0 ? numericVal : rawTrimmed.replace(/^[+-]/, '')
+    }`;
+    const entryDate = costDate.trim() || getTodayIsoDate();
+
     const entry: SessionCostLine = {
-      id: createId('cost'),
+      id: createId('tx'),
       timestamp: formatTimestamp(),
+      date: entryDate,
+      type: effectiveType,
       description: costDesc.trim(),
-      amount: rawTrimmed,
+      notes: costNotes.trim(),
+      amount: formattedAmount,
       currency: costCurrency,
     };
 
     onUpdateState((prev) => {
       let nextCurrency = prev.gearAndNotes.currency;
-      if (applyCostToWallet) {
-        const parsed = parseInt(rawTrimmed.replace(/[^0-9+-]/g, ''), 10);
-        if (!Number.isNaN(parsed) && parsed !== 0) {
-          // Signed "+10" adds; "-5" or unsigned "5" deducts as a cost
-          const delta = rawTrimmed.startsWith('+')
-            ? Math.abs(parsed)
-            : rawTrimmed.startsWith('-')
-            ? -Math.abs(parsed)
-            : -Math.abs(parsed);
-          const key = costCurrency.toLowerCase() as 'gp' | 'sp' | 'cp';
-          nextCurrency = {
-            ...prev.gearAndNotes.currency,
-            [key]: Math.max(0, prev.gearAndNotes.currency[key] + delta),
-          };
-        }
+      if (applyCostToWallet && numericVal > 0) {
+        const delta = effectiveType === 'income' ? numericVal : -numericVal;
+        const key = costCurrency.toLowerCase() as keyof CurrencyWallet;
+        nextCurrency = {
+          ...prev.gearAndNotes.currency,
+          [key]: Math.max(0, prev.gearAndNotes.currency[key] + delta),
+        };
       }
 
       return {
@@ -417,6 +523,7 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
     });
 
     setCostDesc('');
+    setCostNotes('');
     setCostAmount('');
   };
 
@@ -1600,200 +1707,523 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
           );
         })()}
 
-        {/* Currency & Session Costs */}
+        {/* Currency & Session Costs (Full 5-Denomination Tracker: PP / GP / EP / SP / CP) */}
         <section
           id="section-currency"
           className="surface-clinical rounded p-4 flex flex-col gap-3"
         >
-          <div className="flex items-center justify-between border-b border-[#2e243b] pb-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#2e243b] pb-2">
             <h2 className="font-display text-sm uppercase tracking-[0.08em] text-[#9eb0a7] flex items-center gap-1.5">
-              <Coins className="w-3.5 h-3.5 text-[#a855f7]" />
-              <span>Currency &amp; Session Costs</span>
+              <Coins className="w-3.5 h-3.5 text-[#facc15]" />
+              <span>Currency &amp; Transaction History</span>
             </h2>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[11px] text-[#c084fc] tabular-nums">
+                {(() => {
+                  const totalGp = calculateTotalGoldValue(state.gearAndNotes.currency);
+                  return `≈ ${totalGp.toFixed(totalGp % 1 === 0 ? 0 : 2)} GP`;
+                })()}
+              </span>
+              {!readOnly && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateState((prev) => ({
+                      ...prev,
+                      gearAndNotes: {
+                        ...prev.gearAndNotes,
+                        currency: condenseCurrencyWallet(prev.gearAndNotes.currency),
+                      },
+                    }))
+                  }
+                  className="px-1.5 py-0.5 rounded bg-[#080c0a] border border-[#2e243b] hover:border-[#c084fc] font-mono text-[10px] text-[#9eb0a7] hover:text-[#d4e0da] inline-flex items-center gap-1 cursor-pointer"
+                  title="Condense loose CP/SP/EP up into higher standard coins (PP/GP/SP/CP)"
+                >
+                  <ArrowRightLeft className="w-2.5 h-2.5" />
+                  <span>Condense</span>
+                </button>
+              )}
+            </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
             {(
               [
-                { key: 'gp', label: 'GP' },
-                { key: 'sp', label: 'SP' },
-                { key: 'cp', label: 'CP' },
+                { key: 'pp', label: 'PP', name: 'Platinum', accent: 'text-[#e2e8f0] border-[#94a3b8]/40' },
+                { key: 'gp', label: 'GP', name: 'Gold', accent: 'text-[#facc15] border-[#facc15]/40' },
+                { key: 'ep', label: 'EP', name: 'Electrum', accent: 'text-[#60a5fa] border-[#60a5fa]/40' },
+                { key: 'sp', label: 'SP', name: 'Silver', accent: 'text-[#cbd5e1] border-[#64748b]/40' },
+                { key: 'cp', label: 'CP', name: 'Copper', accent: 'text-[#fb923c] border-[#fb923c]/40' },
               ] as const
             ).map((coin) => (
               <div
                 key={coin.key}
-                className="bg-[#080c0a] border border-[#2e243b] rounded px-2.5 py-2 flex items-center justify-between"
+                className={`bg-[#080c0a] border rounded p-2 flex flex-col gap-1.5 ${coin.accent.split(' ')[1]}`}
               >
-                <span className="font-mono text-xs text-[#9eb0a7]">
-                  {coin.label}
-                </span>
-                {readOnly ? (
-                  <span className="font-mono text-sm font-semibold text-[#d4e0da] tabular-nums">
-                    {state.gearAndNotes.currency[coin.key]}
+                <div className="flex items-center justify-between">
+                  <span className={`font-mono text-[11px] font-bold ${coin.accent.split(' ')[0]}`}>
+                    {coin.label}
                   </span>
+                  <span className="text-[9px] text-[#65766e] truncate">{coin.name}</span>
+                </div>
+                {readOnly ? (
+                  <div className="font-mono text-sm font-semibold text-[#d4e0da] tabular-nums text-center py-0.5">
+                    {state.gearAndNotes.currency[coin.key]}
+                  </div>
                 ) : (
-                  <input
-                    type="number"
-                    min={0}
-                    value={state.gearAndNotes.currency[coin.key]}
-                    onChange={(e) =>
-                      onUpdateState((prev) => ({
-                        ...prev,
-                        gearAndNotes: {
-                          ...prev.gearAndNotes,
-                          currency: {
-                            ...prev.gearAndNotes.currency,
-                            [coin.key]: Math.max(
-                              0,
-                              parseInt(e.target.value, 10) || 0
-                            ),
+                  <div className="flex items-center justify-between gap-1">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdateState((prev) => ({
+                          ...prev,
+                          gearAndNotes: {
+                            ...prev.gearAndNotes,
+                            currency: {
+                              ...prev.gearAndNotes.currency,
+                              [coin.key]: Math.max(
+                                0,
+                                prev.gearAndNotes.currency[coin.key] - 1
+                              ),
+                            },
                           },
-                        },
-                      }))
-                    }
-                    className="w-14 bg-transparent text-right font-mono text-sm font-semibold text-[#d4e0da] tabular-nums focus:outline-none focus:text-[#c084fc]"
-                  />
+                        }))
+                      }
+                      aria-label={`Decrease ${coin.name} by 1`}
+                      className="w-5 h-5 rounded bg-[#0b100e] border border-[#2e243b] hover:border-[#ff4d4d] text-[#9eb0a7] hover:text-[#ff4d4d] flex items-center justify-center shrink-0 cursor-pointer"
+                    >
+                      <Minus className="w-2.5 h-2.5" />
+                    </button>
+                    <input
+                      type="number"
+                      min={0}
+                      value={state.gearAndNotes.currency[coin.key]}
+                      onChange={(e) =>
+                        onUpdateState((prev) => ({
+                          ...prev,
+                          gearAndNotes: {
+                            ...prev.gearAndNotes,
+                            currency: {
+                              ...prev.gearAndNotes.currency,
+                              [coin.key]: Math.max(
+                                0,
+                                parseInt(e.target.value, 10) || 0
+                              ),
+                            },
+                          },
+                        }))
+                      }
+                      aria-label={`${coin.name} pieces`}
+                      className="w-full min-w-0 bg-transparent text-center font-mono text-sm font-semibold text-[#d4e0da] tabular-nums focus:outline-none focus:text-[#c084fc]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdateState((prev) => ({
+                          ...prev,
+                          gearAndNotes: {
+                            ...prev.gearAndNotes,
+                            currency: {
+                              ...prev.gearAndNotes.currency,
+                              [coin.key]: prev.gearAndNotes.currency[coin.key] + 1,
+                            },
+                          },
+                        }))
+                      }
+                      aria-label={`Increase ${coin.name} by 1`}
+                      className="w-5 h-5 rounded bg-[#0b100e] border border-[#2e243b] hover:border-[#4af626] text-[#9eb0a7] hover:text-[#4af626] flex items-center justify-center shrink-0 cursor-pointer"
+                    >
+                      <Plus className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
                 )}
               </div>
             ))}
           </div>
 
           {!readOnly && (
-            <form onSubmit={handleAddCost} className="flex flex-col gap-2">
-              <div className="flex flex-wrap gap-1.5">
+            <form
+              onSubmit={handleAddCost}
+              className="bg-[#080c0a] border border-[#2e243b] rounded p-2.5 flex flex-col gap-2"
+            >
+              {/* Row 1: Income/Expense Toggle + Amount + Denomination + Date Stamp */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <div
+                  className="inline-flex rounded border border-[#2e243b] bg-[#0b100e] p-0.5 shrink-0"
+                  role="group"
+                  aria-label="Transaction type"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setCostType('income')}
+                    className={`px-2 py-0.5 rounded-sm font-mono text-[10px] font-semibold flex items-center gap-1 transition-colors cursor-pointer ${
+                      costType === 'income'
+                        ? 'bg-[#4af626]/20 text-[#4af626] border border-[#4af626]/50'
+                        : 'text-[#9eb0a7] hover:text-[#d4e0da] border border-transparent'
+                    }`}
+                  >
+                    <ArrowDownLeft className="w-3 h-3" />
+                    <span>Income</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCostType('expense')}
+                    className={`px-2 py-0.5 rounded-sm font-mono text-[10px] font-semibold flex items-center gap-1 transition-colors cursor-pointer ${
+                      costType === 'expense'
+                        ? 'bg-[#ff4d4d]/20 text-[#ff4d4d] border border-[#ff4d4d]/50'
+                        : 'text-[#9eb0a7] hover:text-[#d4e0da] border border-transparent'
+                    }`}
+                  >
+                    <ArrowUpRight className="w-3 h-3" />
+                    <span>Expense</span>
+                  </button>
+                </div>
+
                 <input
-                  type="text"
-                  value={costDesc}
-                  onChange={(e) => setCostDesc(e.target.value)}
-                  placeholder="Cost or reimbursement..."
-                  className="ledger-input flex-1 min-w-[130px] px-2 py-1 text-xs"
-                />
-                <input
-                  type="text"
+                  type="number"
+                  min={1}
                   value={costAmount}
                   onChange={(e) => setCostAmount(e.target.value)}
-                  placeholder="-5 / +10"
+                  placeholder="Amt"
+                  aria-label="Transaction amount"
                   className="ledger-input w-18 px-2 py-1 text-xs font-mono tabular-nums"
                 />
                 <select
                   value={costCurrency}
                   onChange={(e) =>
-                    setCostCurrency(e.target.value as 'GP' | 'SP' | 'CP')
+                    setCostCurrency(e.target.value as CurrencyDenom)
                   }
+                  aria-label="Transaction currency"
                   className="ledger-input px-1.5 py-1 text-xs font-mono"
                 >
+                  <option value="PP">PP</option>
                   <option value="GP">GP</option>
+                  <option value="EP">EP</option>
                   <option value="SP">SP</option>
                   <option value="CP">CP</option>
                 </select>
+                <div className="flex items-center gap-1 ml-auto">
+                  <Calendar className="w-3 h-3 text-[#9eb0a7] shrink-0" />
+                  <input
+                    type="date"
+                    value={costDate}
+                    onChange={(e) => setCostDate(e.target.value)}
+                    aria-label="Transaction date"
+                    className="ledger-input px-1.5 py-0.5 text-[11px] font-mono text-[#d4e0da]"
+                  />
+                </div>
+              </div>
+
+              {/* Row 2: Transaction Note + Submit */}
+              <div className="flex flex-wrap gap-1.5">
+                <input
+                  type="text"
+                  value={costDesc}
+                  onChange={(e) => setCostDesc(e.target.value)}
+                  placeholder="Note (e.g., Sold loot in town, Inn & rations)..."
+                  aria-label="Transaction note"
+                  className="ledger-input flex-1 min-w-[160px] px-2 py-1 text-xs"
+                />
                 <button
                   type="submit"
-                  className="px-2.5 py-1 text-xs font-medium rounded bg-[#171022] border border-[#581c87] hover:border-[#c084fc] text-[#d4e0da] cursor-pointer"
+                  className={`px-3 py-1 text-xs font-semibold rounded border cursor-pointer transition-colors shrink-0 ${
+                    costType === 'income'
+                      ? 'bg-[#4af626]/15 border-[#4af626]/70 text-[#4af626] hover:bg-[#4af626]/25'
+                      : 'bg-[#171022] border-[#a855f7] text-[#d4e0da] hover:border-[#c084fc]'
+                  }`}
                 >
-                  Log
+                  {costType === 'income' ? '+ Add Income' : '- Add Expense'}
                 </button>
               </div>
-              <label className="inline-flex items-center gap-1.5 text-[11px] text-[#9eb0a7] cursor-pointer">
+
+              {/* Row 3: Optional Extended Details + Auto-update Wallet Toggle */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <input
-                  type="checkbox"
-                  checked={applyCostToWallet}
-                  onChange={(e) => setApplyCostToWallet(e.target.checked)}
-                  className="accent-[#a855f7]"
+                  type="text"
+                  value={costNotes}
+                  onChange={(e) => setCostNotes(e.target.value)}
+                  placeholder="Optional details (merchant, party split, location)..."
+                  aria-label="Optional transaction details"
+                  className="ledger-input flex-1 min-w-[160px] px-2 py-0.5 text-[11px]"
                 />
-                <span>
-                  Auto-update GP/SP/CP wallet (<span className="font-mono">+</span> adds,{' '}
-                  <span className="font-mono">-</span> or plain deducts)
-                </span>
-              </label>
+                <label className="inline-flex items-center gap-1.5 text-[11px] text-[#9eb0a7] cursor-pointer shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={applyCostToWallet}
+                    onChange={(e) => setApplyCostToWallet(e.target.checked)}
+                    className="accent-[#a855f7]"
+                  />
+                  <span>Update wallet</span>
+                </label>
+              </div>
             </form>
+          )}
+
+          {/* Transaction History Filter & Net Summary Bar */}
+          {state.gearAndNotes.sessionCosts.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-[#2e243b]">
+              <div className="flex items-center gap-1">
+                {(
+                  [
+                    { id: 'all', label: `All (${state.gearAndNotes.sessionCosts.length})` },
+                    { id: 'income', label: 'Income' },
+                    { id: 'expense', label: 'Expense' },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setTxFilter(tab.id)}
+                    className={`px-2 py-0.5 rounded font-mono text-[10px] border transition-colors cursor-pointer ${
+                      txFilter === tab.id
+                        ? tab.id === 'income'
+                          ? 'bg-[#4af626]/15 border-[#4af626]/60 text-[#4af626]'
+                          : tab.id === 'expense'
+                          ? 'bg-[#ff4d4d]/15 border-[#ff4d4d]/60 text-[#ff4d4d]'
+                          : 'bg-[#171022] border-[#c084fc] text-[#c084fc]'
+                        : 'bg-[#080c0a] border-[#2e243b] text-[#9eb0a7] hover:text-[#d4e0da]'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2 font-mono text-[10px] tabular-nums">
+                <span
+                  className={
+                    txNetGoldSummary.netGp >= 0 ? 'text-[#4af626]' : 'text-[#ff4d4d]'
+                  }
+                  title={`Logged Income: +${txNetGoldSummary.incomeGp.toFixed(2)} GP · Logged Expenses: -${txNetGoldSummary.expenseGp.toFixed(2)} GP`}
+                >
+                  Net: {txNetGoldSummary.netGp >= 0 ? '+' : ''}
+                  {txNetGoldSummary.netGp.toFixed(
+                    txNetGoldSummary.netGp % 1 === 0 ? 0 : 2
+                  )}{' '}
+                  GP
+                </span>
+              </div>
+            </div>
+          )}
+
+          {state.gearAndNotes.sessionCosts.length > 3 && (
+            <div className="relative">
+              <Search className="w-3 h-3 text-[#65766e] absolute left-2 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={txSearch}
+                onChange={(e) => setTxSearch(e.target.value)}
+                placeholder="Filter transaction notes or dates..."
+                aria-label="Filter transactions"
+                className="ledger-input w-full pl-6 pr-2 py-1 text-[11px]"
+              />
+            </div>
           )}
 
           {state.gearAndNotes.sessionCosts.length === 0 ? (
             <p className="text-xs text-[#65766e] py-1">
-              No session cost entries logged yet.
+              No transactions logged yet. Record income or expenses with a note
+              and date stamp above.
+            </p>
+          ) : filteredTransactions.length === 0 ? (
+            <p className="text-xs text-[#65766e] py-1">
+              No transactions match the current filter.
             </p>
           ) : (
-            <div className="divide-y divide-[#1d1827] max-h-40 overflow-y-auto pr-1">
-              {state.gearAndNotes.sessionCosts.map((c) => (
-                <div
-                  key={c.id}
-                  className="py-1.5 flex items-center justify-between gap-1.5 text-xs"
-                >
-                  <div className="min-w-0 flex items-center gap-1.5 flex-1">
-                    <span className="font-mono text-[10px] text-[#65766e] shrink-0">
-                      {c.timestamp.slice(1, 17)}
-                    </span>
+            <div className="divide-y divide-[#1d1827] max-h-60 overflow-y-auto pr-1">
+              {filteredTransactions.map((c) => {
+                const txType = resolveTxType(c);
+                const isIncome = txType === 'income';
+                const displayDate = resolveTxDate(c);
+                const cleanAmt = c.amount.trim().replace(/^[+-]/, '');
+
+                return (
+                  <div
+                    key={c.id}
+                    className="py-2 flex flex-col gap-1 text-xs"
+                  >
+                    <div className="flex items-center justify-between gap-1.5">
+                      <div className="min-w-0 flex items-center gap-1.5 flex-1">
+                        {readOnly ? (
+                          <span
+                            className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${
+                              isIncome
+                                ? 'bg-[#4af626]/12 border-[#4af626]/50 text-[#4af626]'
+                                : 'bg-[#ff4d4d]/12 border-[#ff4d4d]/50 text-[#ff4d4d]'
+                            }`}
+                            title={isIncome ? 'Income' : 'Expense'}
+                          >
+                            {isIncome ? (
+                              <ArrowDownLeft className="w-3 h-3" />
+                            ) : (
+                              <ArrowUpRight className="w-3 h-3" />
+                            )}
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextType: TransactionType = isIncome
+                                ? 'expense'
+                                : 'income';
+                              updateCostField(c.id, {
+                                type: nextType,
+                                amount: `${nextType === 'income' ? '+' : '-'}${cleanAmt}`,
+                              });
+                            }}
+                            title={`Switch to ${isIncome ? 'Expense' : 'Income'}`}
+                            aria-label={`Toggle transaction type for ${c.description}`}
+                            className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 cursor-pointer transition-colors ${
+                              isIncome
+                                ? 'bg-[#4af626]/12 border-[#4af626]/50 text-[#4af626] hover:border-[#4af626]'
+                                : 'bg-[#ff4d4d]/12 border-[#ff4d4d]/50 text-[#ff4d4d] hover:border-[#ff4d4d]'
+                            }`}
+                          >
+                            {isIncome ? (
+                              <ArrowDownLeft className="w-3 h-3" />
+                            ) : (
+                              <ArrowUpRight className="w-3 h-3" />
+                            )}
+                          </button>
+                        )}
+
+                        {readOnly ? (
+                          <span className="font-mono text-[10px] text-[#9eb0a7] shrink-0 tabular-nums">
+                            {displayDate}
+                          </span>
+                        ) : (
+                          <input
+                            type="date"
+                            value={displayDate}
+                            onChange={(e) =>
+                              updateCostField(c.id, { date: e.target.value })
+                            }
+                            aria-label="Transaction date stamp"
+                            className="bg-transparent border border-transparent hover:border-[#2e243b] focus:bg-[#080c0a] focus:border-[#c084fc] rounded px-1 py-0 font-mono text-[10px] text-[#9eb0a7] shrink-0 focus:outline-none"
+                          />
+                        )}
+
+                        {readOnly ? (
+                          <span className="text-[#d4e0da] font-medium truncate">
+                            {c.description}
+                          </span>
+                        ) : (
+                          <input
+                            type="text"
+                            value={c.description}
+                            onChange={(e) =>
+                              updateCostField(c.id, { description: e.target.value })
+                            }
+                            aria-label="Transaction note"
+                            className={`${INLINE_INPUT_CLASS} flex-1 min-w-0 text-[#d4e0da] font-medium`}
+                          />
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        {readOnly ? (
+                          <span
+                            className={`font-mono text-xs font-semibold tabular-nums ${
+                              isIncome ? 'text-[#4af626]' : 'text-[#ff4d4d]'
+                            }`}
+                          >
+                            {isIncome ? '+' : '-'}
+                            {cleanAmt} {c.currency}
+                          </span>
+                        ) : (
+                          <>
+                            <span
+                              className={`font-mono text-xs font-bold ${
+                                isIncome ? 'text-[#4af626]' : 'text-[#ff4d4d]'
+                              }`}
+                            >
+                              {isIncome ? '+' : '-'}
+                            </span>
+                            <input
+                              type="text"
+                              value={cleanAmt}
+                              onChange={(e) => {
+                                const stripped = e.target.value.replace(/^[+-]/, '');
+                                updateCostField(c.id, {
+                                  amount: `${isIncome ? '+' : '-'}${stripped}`,
+                                });
+                              }}
+                              aria-label="Transaction amount"
+                              className={`${INLINE_INPUT_CLASS} w-12 text-right font-mono text-xs font-semibold tabular-nums ${
+                                isIncome ? 'text-[#4af626]' : 'text-[#ff4d4d]'
+                              }`}
+                            />
+                            <select
+                              value={c.currency}
+                              onChange={(e) =>
+                                updateCostField(c.id, {
+                                  currency: e.target.value as CurrencyDenom,
+                                })
+                              }
+                              aria-label="Transaction currency"
+                              className="bg-[#080c0a] border border-[#2e243b] rounded px-1 py-0.5 font-mono text-[10px] text-[#9eb0a7]"
+                            >
+                              <option value="PP">PP</option>
+                              <option value="GP">GP</option>
+                              <option value="EP">EP</option>
+                              <option value="SP">SP</option>
+                              <option value="CP">CP</option>
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleDeleteWithUndo(
+                                  'cost',
+                                  c.description || 'transaction',
+                                  c,
+                                  () => {
+                                    onUpdateState((prev) => ({
+                                      ...prev,
+                                      gearAndNotes: {
+                                        ...prev.gearAndNotes,
+                                        sessionCosts:
+                                          prev.gearAndNotes.sessionCosts.filter(
+                                            (item) => item.id !== c.id
+                                          ),
+                                      },
+                                    }));
+                                  }
+                                )
+                              }
+                              className="text-[#65766e] hover:text-[#ff4d4d] cursor-pointer p-0.5"
+                              aria-label={`Delete transaction ${c.description}`}
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Optional secondary detail note */}
                     {readOnly ? (
-                      <span className="text-[#d4e0da] truncate">
-                        {c.description}
-                      </span>
+                      c.notes?.trim() ? (
+                        <div className="pl-6.5 text-[11px] text-[#9eb0a7] leading-snug">
+                          {c.notes}
+                        </div>
+                      ) : null
                     ) : (
-                      <input
-                        type="text"
-                        value={c.description}
-                        onChange={(e) =>
-                          updateCostField(c.id, { description: e.target.value })
-                        }
-                        aria-label="Session cost description"
-                        className={`${INLINE_INPUT_CLASS} flex-1 min-w-0 text-[#d4e0da]`}
-                      />
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    {readOnly ? (
-                      <span className="font-mono text-xs text-[#c084fc] tabular-nums">
-                        {c.amount} {c.currency}
-                      </span>
-                    ) : (
-                      <>
+                      <div className="pl-6.5">
                         <input
                           type="text"
-                          value={c.amount}
+                          value={c.notes ?? ''}
                           onChange={(e) =>
-                            updateCostField(c.id, { amount: e.target.value })
+                            updateCostField(c.id, { notes: e.target.value })
                           }
-                          aria-label="Session cost amount"
-                          className={`${INLINE_INPUT_CLASS} w-12 text-right font-mono text-xs text-[#c084fc] tabular-nums`}
+                          placeholder="Add extra detail note..."
+                          aria-label={`Extra note for ${c.description}`}
+                          className={`${INLINE_INPUT_CLASS} w-full text-[11px] text-[#9eb0a7] placeholder:text-[#4b5a53]`}
                         />
-                        <select
-                          value={c.currency}
-                          onChange={(e) =>
-                            updateCostField(c.id, {
-                              currency: e.target.value as 'GP' | 'SP' | 'CP',
-                            })
-                          }
-                          aria-label="Session cost currency"
-                          className="bg-[#080c0a] border border-[#2e243b] rounded px-1 py-0.5 font-mono text-[10px] text-[#9eb0a7]"
-                        >
-                          <option value="GP">GP</option>
-                          <option value="SP">SP</option>
-                          <option value="CP">CP</option>
-                        </select>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleDeleteWithUndo('cost', c.description || 'cost entry', c, () => {
-                              onUpdateState((prev) => ({
-                                ...prev,
-                                gearAndNotes: {
-                                  ...prev.gearAndNotes,
-                                  sessionCosts: prev.gearAndNotes.sessionCosts.filter(
-                                    (item) => item.id !== c.id
-                                  ),
-                                },
-                              }));
-                            })
-                          }
-                          className="text-[#65766e] hover:text-[#ff4d4d] cursor-pointer p-0.5"
-                          aria-label={`Delete cost ${c.description}`}
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                      </>
+                      </div>
                     )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
@@ -1804,21 +2234,53 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
          ==================================================================== */}
       <div className="md:col-span-2 xl:col-span-4 flex flex-col gap-4">
         {/* Quick Session Scratchpad */}
-        <section
+        <MovableResizableBox
           id="section-scratchpad"
+          label="Quick Session Scratchpad"
+          layout={state.textBoxLayout?.['gear-scratchpad']}
+          editMode={isNotesLayoutEditing}
+          readOnly={readOnly}
+          onChangeLayout={(next) =>
+            handleUpdateNotesBoxLayout('gear-scratchpad', next)
+          }
+          minWidth={240}
+          minHeight={170}
           className={`rounded p-4 flex flex-col gap-2.5 transition-colors ${
             !readOnly && state.gearAndNotes.scratchpadPrivate
               ? 'surface-resonant'
               : 'surface-clinical'
           }`}
         >
-          <div className="flex items-center justify-between gap-2 border-b border-[#2e243b] pb-2">
+          <div className="flex items-center justify-between gap-2 border-b border-[#2e243b] pb-2 shrink-0">
             <h2 className="font-display text-sm uppercase tracking-[0.08em] text-[#9eb0a7] flex items-center gap-1.5">
               <FileText className="w-3.5 h-3.5 text-[#a855f7]" />
               <span>Quick Session Scratchpad</span>
             </h2>
             {!readOnly && (
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setNotesLayoutEdit((prev) => !prev)}
+                  aria-pressed={isNotesLayoutEditing}
+                  className={`px-1.5 py-0.5 text-[10px] font-mono rounded border transition-colors flex items-center gap-1 cursor-pointer ${
+                    isNotesLayoutEditing
+                      ? 'bg-[#a855f7] border-[#c084fc] text-[#080c0a] font-semibold'
+                      : 'bg-[#080c0a] border-[#2e243b] text-[#9eb0a7] hover:border-[#c084fc] hover:text-[#d4e0da]'
+                  }`}
+                  title="Move and resize notes boxes"
+                >
+                  {isNotesLayoutEditing ? (
+                    <>
+                      <Check className="w-2.5 h-2.5" />
+                      <span>Done</span>
+                    </>
+                  ) : (
+                    <>
+                      <Move className="w-2.5 h-2.5" />
+                      <span>Layout</span>
+                    </>
+                  )}
+                </button>
                 <button
                   type="button"
                   onClick={insertScratchpadTimestamp}
@@ -1866,7 +2328,7 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
           </div>
 
           {state.gearAndNotes.scratchpadPrivate && !canViewPrivate ? (
-            <div className="bg-[#080c0a] border border-dashed border-[#2e243b] rounded p-5 flex flex-col items-center justify-center text-center gap-1.5 min-h-[112px]">
+            <div className="flex-1 bg-[#080c0a] border border-dashed border-[#2e243b] rounded p-5 flex flex-col items-center justify-center text-center gap-1.5 min-h-[112px]">
               <EyeOff className="w-4 h-4 text-[#65766e]" />
               <div className="font-mono text-[11px] uppercase tracking-wider text-[#9eb0a7]">
                 {readOnly
@@ -1880,7 +2342,7 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
               </p>
             </div>
           ) : readOnly ? (
-            <div className="bg-[#080c0a] border border-[#2e243b] rounded p-3 text-xs text-[#d4e0da] min-h-[112px] whitespace-pre-wrap leading-relaxed">
+            <div className="flex-1 min-h-[112px] overflow-y-auto bg-[#080c0a] border border-[#2e243b] rounded p-3 text-xs text-[#d4e0da] whitespace-pre-wrap leading-relaxed">
               {state.gearAndNotes.scratchpad.trim() || (
                 <span className="text-[#65766e] italic">Scratchpad is empty.</span>
               )}
@@ -1900,14 +2362,23 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
                 }))
               }
               placeholder="Jot down live session notes, NPC names, leads, or reminders..."
-              className="ledger-input w-full p-2.5 text-xs leading-relaxed resize-y"
+              className="ledger-input flex-1 w-full p-2.5 text-xs leading-relaxed resize-y min-h-[112px]"
             />
           )}
-        </section>
+        </MovableResizableBox>
 
         {/* Campaign & Case Log */}
-        <section
+        <MovableResizableBox
           id="section-campaign-log"
+          label="Campaign & Case Log"
+          layout={state.textBoxLayout?.['gear-campaign-log']}
+          editMode={isNotesLayoutEditing}
+          readOnly={readOnly}
+          onChangeLayout={(next) =>
+            handleUpdateNotesBoxLayout('gear-campaign-log', next)
+          }
+          minWidth={240}
+          minHeight={200}
           className="surface-clinical rounded p-4 flex flex-col gap-3"
         >
           <div className="flex items-center justify-between gap-2 border-b border-[#2e243b] pb-2">
@@ -2212,7 +2683,7 @@ export const GearNotesScreen: React.FC<GearNotesScreenProps> = ({
               ))}
             </div>
           )}
-        </section>
+        </MovableResizableBox>
       </div>
 
       {/* Accidental Deletion Revert / Undo Floating Toast */}
